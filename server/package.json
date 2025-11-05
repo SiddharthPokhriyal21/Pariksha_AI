@@ -1,11 +1,30 @@
 {
   "name": "pariksha-ai-backend",
   "version": "1.0.0",
-  "description": "Mock backend for SecureExam Pro application",
+  "description": "Backend server for Pariksha AI - AI-powered exam proctoring platform",
   "main": "dist/server.js",
+  "type": "commonjs",
   "scripts": {
     "start": "ts-node src/server.ts",
+    "dev": "ts-node src/server.ts",
+    "build": "tsc",
+    "build:watch": "tsc --watch",
     "install-deps": "npm install"
+  },
+  "keywords": [
+    "exam",
+    "proctoring",
+    "ai",
+    "education",
+    "api",
+    "express",
+    "typescript"
+  ],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
   },
   "dependencies": {
     "body-parser": "^1.20.2",
