@@ -1,13 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
-import { AlertCircle, Camera, Clock, Eye, AlertTriangle } from "lucide-react";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Camera, Clock, Eye } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
+import { getApiUrl } from "@/lib/api-config";
 
 const StudentTest = () => {
   const navigate = useNavigate();
@@ -15,7 +15,18 @@ const StudentTest = () => {
   const [timeLeft, setTimeLeft] = useState(3600); // 60 minutes
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [answers, setAnswers] = useState<Record<number, string>>({});
-  const [proctoringAlerts, setProctoringAlerts] = useState<string[]>([]);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  // Refs for recording
+  const liveFeedRef = useRef<HTMLVideoElement>(null);
+  const videoRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioRecorderRef = useRef<MediaRecorder | null>(null);
+  const videoChunksRef = useRef<Blob[]>([]);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const combinedStreamRef = useRef<MediaStream | null>(null);
+  const startTimeRef = useRef<Date | null>(null);
+  const violationsRef = useRef<Array<{ timestamp: Date; type: string; severity: 'low' | 'medium' | 'high' }>>([]);
   
   // Mock questions
   const questions = [
@@ -32,12 +43,134 @@ const StudentTest = () => {
     // Add more questions as needed
   ];
 
+  // Initialize camera and recording
+  useEffect(() => {
+    let isMounted = true;
+
+    const startRecording = async () => {
+      try {
+        // Request camera and microphone access together
+        const combinedStream = await navigator.mediaDevices.getUserMedia({
+          video: { 
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            facingMode: 'user'
+          },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+
+        if (!isMounted) {
+          combinedStream.getTracks().forEach(track => track.stop());
+          return;
+        }
+
+        combinedStreamRef.current = combinedStream;
+
+        // Set up live feed (top right corner)
+        if (liveFeedRef.current) {
+          liveFeedRef.current.srcObject = combinedStream;
+          liveFeedRef.current.play().catch(console.error);
+        }
+
+        // Get video and audio tracks separately for recording
+        const videoTracks = combinedStream.getVideoTracks();
+        const audioTracks = combinedStream.getAudioTracks();
+
+        // Create video-only stream for video recording
+        const videoStream = new MediaStream(videoTracks);
+        const videoRecorder = new MediaRecorder(videoStream, {
+          mimeType: 'video/webm;codecs=vp8'
+        });
+
+        videoRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            videoChunksRef.current.push(event.data);
+          }
+        };
+
+        // Create audio-only stream for audio recording
+        const audioStream = new MediaStream(audioTracks);
+        const audioRecorder = new MediaRecorder(audioStream, {
+          mimeType: 'audio/webm;codecs=opus'
+        });
+
+        audioRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunksRef.current.push(event.data);
+          }
+        };
+
+        // Start both recorders
+        videoRecorder.start(1000); // Collect data every second
+        audioRecorder.start(1000);
+        
+        videoRecorderRef.current = videoRecorder;
+        audioRecorderRef.current = audioRecorder;
+
+        setIsRecording(true);
+        startTimeRef.current = new Date();
+
+        // Monitor for violations (silently, no alerts to student)
+        const violationInterval = setInterval(() => {
+          // Simulate proctoring checks (in production, use face-api.js)
+          const events = [
+            { type: "Looking away from screen", severity: 'low' as const },
+            { type: "Multiple faces detected", severity: 'high' as const },
+            { type: "Unauthorized device detected", severity: 'medium' as const },
+            { type: "Audio detected", severity: 'low' as const },
+          ];
+          
+          if (Math.random() > 0.85) {
+            const event = events[Math.floor(Math.random() * events.length)];
+            violationsRef.current.push({
+              timestamp: new Date(),
+              type: event.type,
+              severity: event.severity
+            });
+          }
+        }, 10000); // Check every 10 seconds
+
+        return () => {
+          clearInterval(violationInterval);
+        };
+      } catch (error) {
+        console.error('Error accessing media devices:', error);
+        toast({
+          title: "Camera/Microphone Error",
+          description: "Unable to access camera or microphone. Please check permissions.",
+          variant: "destructive",
+        });
+      }
+    };
+
+    startRecording();
+
+    return () => {
+      isMounted = false;
+      // Cleanup
+      if (combinedStreamRef.current) {
+        combinedStreamRef.current.getTracks().forEach(track => track.stop());
+      }
+      if (videoRecorderRef.current && videoRecorderRef.current.state !== 'inactive') {
+        videoRecorderRef.current.stop();
+      }
+      if (audioRecorderRef.current && audioRecorderRef.current.state !== 'inactive') {
+        audioRecorderRef.current.stop();
+      }
+    };
+  }, []); // Only run once on mount
+
   // Timer
   useEffect(() => {
     const timer = setInterval(() => {
       setTimeLeft((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
+          // Auto-submit when time runs out
           handleSubmitTest();
           return 0;
         }
@@ -46,33 +179,8 @@ const StudentTest = () => {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, []);
-
-  // Mock proctoring alerts
-  useEffect(() => {
-    const interval = setInterval(() => {
-      // Simulate random proctoring events
-      const events = [
-        "Multiple faces detected",
-        "Looking away from screen",
-        "Unauthorized device detected",
-        "Audio detected"
-      ];
-      
-      if (Math.random() > 0.7) {
-        const event = events[Math.floor(Math.random() * events.length)];
-        setProctoringAlerts(prev => [...prev, `${new Date().toLocaleTimeString()}: ${event}`]);
-        
-        toast({
-          title: "Proctoring Alert",
-          description: event,
-          variant: "destructive",
-        });
-      }
-    }, 15000); // Check every 15 seconds
-
-    return () => clearInterval(interval);
-  }, [toast]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run once on mount
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -80,18 +188,136 @@ const StudentTest = () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const handleSubmitTest = () => {
-    toast({
-      title: "Test Submitted",
-      description: "Your exam has been submitted successfully",
+  const handleSubmitTest = async () => {
+    if (isSubmitting) return;
+    
+    setIsSubmitting(true);
+
+    try {
+      // Create promises to wait for recorders to stop
+      const videoStopPromise = new Promise<void>((resolve) => {
+        if (videoRecorderRef.current) {
+          if (videoRecorderRef.current.state !== 'inactive') {
+            videoRecorderRef.current.onstop = () => resolve();
+            videoRecorderRef.current.stop();
+          } else {
+            resolve();
+          }
+        } else {
+          resolve();
+        }
+      });
+
+      const audioStopPromise = new Promise<void>((resolve) => {
+        if (audioRecorderRef.current) {
+          if (audioRecorderRef.current.state !== 'inactive') {
+            audioRecorderRef.current.onstop = () => resolve();
+            audioRecorderRef.current.stop();
+          } else {
+            resolve();
+          }
+        } else {
+          resolve();
+        }
+      });
+
+      // Wait for both recorders to stop
+      await Promise.all([videoStopPromise, audioStopPromise]);
+
+      // Stop camera/microphone streams
+      if (combinedStreamRef.current) {
+        combinedStreamRef.current.getTracks().forEach(track => track.stop());
+      }
+
+      // Combine video chunks
+      const videoBlob = new Blob(videoChunksRef.current, { type: 'video/webm' });
+      const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+
+      // Convert to base64
+      const videoBase64 = await blobToBase64(videoBlob);
+      const audioBase64 = await blobToBase64(audioBlob);
+
+
+      // Get student ID and test ID (you may need to get these from context/params)
+      const studentId = localStorage.getItem('studentId') || 'unknown';
+      const testId = localStorage.getItem('testId') || 'test-1';
+
+      // Submit test with recording
+      const response = await fetch(getApiUrl('/api/student/submit-test'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId,
+          testId,
+          answers,
+          videoBlob: videoBase64,
+          audioBlob: audioBase64,
+          startTime: startTimeRef.current?.toISOString(),
+          endTime: new Date().toISOString(),
+          violations: violationsRef.current
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        toast({
+          title: "Test Submitted",
+          description: "Your exam has been submitted successfully",
+        });
+        navigate('/');
+      } else {
+        const error = await response.json();
+        toast({
+          title: "Submission Failed",
+          description: error.message || "Failed to submit test. Please try again.",
+          variant: "destructive",
+        });
+      }
+    } catch (error: any) {
+      console.error('Test submission error:', error);
+      toast({
+        title: "Error",
+        description: "Failed to submit test. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Helper function to convert blob to base64
+  const blobToBase64 = (blob: Blob): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64String = reader.result as string;
+        resolve(base64String);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
     });
-    navigate('/');
   };
 
   return (
-    <div className="min-h-screen bg-gradient-hero p-4">
+    <div className="min-h-screen bg-gradient-hero p-4 relative">
+      {/* Live Camera Feed - Top Right Corner */}
+      <div className="fixed top-4 right-4 z-50 w-64 h-48 bg-black rounded-lg overflow-hidden shadow-2xl border-2 border-primary">
+        <video
+          ref={liveFeedRef}
+          autoPlay
+          playsInline
+          muted
+          className="w-full h-full object-cover"
+          style={{ transform: 'scaleX(-1)' }} // Mirror for better UX
+        />
+        <div className="absolute top-2 left-2 bg-red-500 text-white text-xs px-2 py-1 rounded flex items-center gap-1">
+          <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+          REC
+        </div>
+      </div>
+
       {/* Proctoring Header */}
-      <div className="bg-card border-b sticky top-0 z-50 shadow-md">
+      <div className="bg-card border-b sticky top-0 z-40 shadow-md">
         <div className="container max-w-7xl mx-auto py-3 px-4">
           <div className="flex items-center justify-between flex-wrap gap-4">
             <div className="flex items-center gap-4">
@@ -101,7 +327,7 @@ const StudentTest = () => {
               </Badge>
               <Badge variant="outline" className="bg-primary/10">
                 <Camera className="w-3 h-3 mr-1" />
-                Recording
+                {isRecording ? 'Recording' : 'Not Recording'}
               </Badge>
             </div>
             
@@ -115,10 +341,10 @@ const StudentTest = () => {
         </div>
       </div>
 
-      <div className="container max-w-7xl mx-auto py-6">
-        <div className="grid lg:grid-cols-3 gap-6">
+      <div className="container max-w-7xl mx-auto py-6 pr-72">
+        <div className="grid lg:grid-cols-4 gap-6">
           {/* Main Test Area */}
-          <div className="lg:col-span-2 space-y-6">
+          <div className="lg:col-span-3 space-y-6">
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
@@ -149,7 +375,7 @@ const StudentTest = () => {
                   <Button 
                     variant="outline" 
                     onClick={() => setCurrentQuestion(Math.max(0, currentQuestion - 1))}
-                    disabled={currentQuestion === 0}
+                    disabled={currentQuestion === 0 || isSubmitting}
                   >
                     Previous
                   </Button>
@@ -157,12 +383,17 @@ const StudentTest = () => {
                     <Button 
                       onClick={() => setCurrentQuestion(currentQuestion + 1)}
                       className="flex-1"
+                      disabled={isSubmitting}
                     >
                       Next Question
                     </Button>
                   ) : (
-                    <Button onClick={handleSubmitTest} className="flex-1">
-                      Submit Test
+                    <Button 
+                      onClick={handleSubmitTest} 
+                      className="flex-1"
+                      disabled={isSubmitting}
+                    >
+                      {isSubmitting ? 'Submitting...' : 'Submit Test'}
                     </Button>
                   )}
                 </div>
@@ -170,57 +401,8 @@ const StudentTest = () => {
             </Card>
           </div>
 
-          {/* Proctoring Sidebar */}
+          {/* Question Navigator */}
           <div className="space-y-6">
-            {/* Webcam Feed */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <Camera className="w-4 h-4" />
-                  Live Webcam Feed
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="aspect-video bg-muted rounded-lg flex items-center justify-center">
-                  <Camera className="w-12 h-12 text-muted-foreground" />
-                </div>
-                <p className="text-xs text-muted-foreground mt-2">
-                  Keep your face visible at all times
-                </p>
-              </CardContent>
-            </Card>
-
-            {/* Proctoring Alerts */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4" />
-                  Proctoring Alerts
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {proctoringAlerts.length === 0 ? (
-                  <Alert>
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertDescription className="text-xs">
-                      No violations detected
-                    </AlertDescription>
-                  </Alert>
-                ) : (
-                  <div className="space-y-2 max-h-64 overflow-y-auto">
-                    {proctoringAlerts.slice(-5).reverse().map((alert, index) => (
-                      <Alert key={index} variant="destructive">
-                        <AlertDescription className="text-xs">
-                          {alert}
-                        </AlertDescription>
-                      </Alert>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Question Navigator */}
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm">Question Navigator</CardTitle>
@@ -234,6 +416,7 @@ const StudentTest = () => {
                       size="sm"
                       onClick={() => setCurrentQuestion(index)}
                       className="w-full"
+                      disabled={isSubmitting}
                     >
                       {index + 1}
                     </Button>
@@ -244,6 +427,7 @@ const StudentTest = () => {
           </div>
         </div>
       </div>
+
     </div>
   );
 };

@@ -3,6 +3,10 @@ import express, { Request, Response } from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import mongoose from 'mongoose';
+import User from './models/User';
+import TestRecording from './models/TestRecording';
+import { loadFaceModels, validateFace, compareFaces } from './utils/faceRecognition';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -82,13 +86,10 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions)); 
-// Parses JSON bodies, increasing limit to handle base64 photos
-app.use(bodyParser.json({ limit: '50mb' })); 
+// Parses JSON bodies, increasing limit to handle base64 videos/audio
+app.use(bodyParser.json({ limit: '500mb' })); 
 
 // --- Utility Functions ---
-const findUser = (email: string, role: 'student' | 'examiner') => 
-  MOCK_DB.users.find(u => u.email === email && u.role === role);
-
 const getNextId = (arr: any[]) => (arr.length ? Math.max(...arr.map(i => i.id)) + 1 : 1);
 
 
@@ -97,46 +98,234 @@ const getNextId = (arr: any[]) => (arr.length ? Math.max(...arr.map(i => i.id)) 
 // ===============================
 
 // Handles registration from StudentRegister.tsx and ExaminerRegister.tsx
-app.post('/api/auth/:role/register', (req: Request, res: Response) => {
-  const { role } = req.params;
-  const { fullName, email, password, photo } = req.body;
+app.post('/api/auth/:role/register', async (req: Request, res: Response) => {
+  try {
+    // Check MongoDB connection
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ 
+        message: 'Database connection not available. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE'
+      });
+    }
 
-  if (!fullName || !email || !password || !photo) {
-    return res.status(400).json({ message: 'All fields are required.' });
+    const { role } = req.params;
+    const { fullName, email, password, photo } = req.body;
+
+    // Validate input
+    if (!fullName || !email || !password || !photo) {
+      return res.status(400).json({ 
+        message: 'All fields are required.',
+        error: 'MISSING_FIELDS'
+      });
+    }
+
+    // Validate role
+    if (role !== 'student' && role !== 'examiner') {
+      return res.status(400).json({ 
+        message: 'Invalid role. Must be "student" or "examiner".',
+        error: 'INVALID_ROLE'
+      });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ 
+        message: 'Please provide a valid email address.',
+        error: 'INVALID_EMAIL'
+      });
+    }
+
+    // Validate password length
+    if (password.length < 6) {
+      return res.status(400).json({ 
+        message: 'Password must be at least 6 characters long.',
+        error: 'INVALID_PASSWORD'
+      });
+    }
+
+    // Check if user already exists in MongoDB (email must be unique globally)
+    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    if (existingUser) {
+      return res.status(409).json({ 
+        message: `User with email ${email} already exists. Please use a different email.`,
+        error: 'USER_EXISTS'
+      });
+    }
+
+    // Validate and extract face descriptor from photo
+    const faceValidation = await validateFace(photo);
+    if (!faceValidation.success || !faceValidation.descriptor) {
+      return res.status(400).json({
+        message: faceValidation.error || 'Face validation failed.',
+        error: 'FACE_VALIDATION_FAILED',
+        details: faceValidation.error
+      });
+    }
+
+    // Convert Float32Array to regular array for MongoDB storage
+    const faceDescriptorArray = Array.from(faceValidation.descriptor);
+
+    // Create new user (password will be hashed by the pre-save hook)
+    const newUser = new User({
+      fullName: fullName.trim(),
+      email: email.toLowerCase().trim(),
+      password,
+      role: role as 'student' | 'examiner',
+      photo,
+      faceDescriptor: faceDescriptorArray,
+    });
+
+    // Save to MongoDB
+    await newUser.save();
+
+    // Return success response (don't send password or face descriptor)
+    res.status(201).json({ 
+      message: 'Registration successful', 
+      userId: (newUser._id as any).toString(), 
+      role: newUser.role,
+      email: newUser.email
+    });
+  } catch (error: any) {
+    console.error('Registration error:', error);
+    
+    // Handle duplicate key error (MongoDB unique constraint)
+    if (error.code === 11000) {
+      return res.status(409).json({ 
+        message: 'User with this email already exists for this role.',
+        error: 'USER_EXISTS'
+      });
+    }
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const firstError = Object.values(error.errors)[0] as any;
+      return res.status(400).json({ 
+        message: firstError?.message || 'Validation failed',
+        error: 'VALIDATION_ERROR'
+      });
+    }
+    
+    // Handle MongoDB connection errors
+    if (error.name === 'MongoServerError' || error.name === 'MongoNetworkError') {
+      return res.status(503).json({ 
+        message: 'Database connection error. Please try again later.',
+        error: 'DATABASE_ERROR'
+      });
+    }
+    
+    res.status(500).json({ 
+      message: 'Registration failed. Please try again.',
+      error: 'INTERNAL_ERROR'
+    });
   }
-
-  if (findUser(email, role as 'student' | 'examiner')) {
-    return res.status(409).json({ message: `User with email ${email} already exists.` });
-  }
-
-  const newUser = {
-    id: getNextId(MOCK_DB.users),
-    fullName,
-    email,
-    password,
-    role: role as 'student' | 'examiner',
-    photo,
-  };
-  MOCK_DB.users.push(newUser);
-
-  // Success. In a real app, 'password' would be hashed.
-  res.status(201).json({ message: 'Registration successful', userId: newUser.id, role: newUser.role });
 });
 
 // Handles login from StudentLogin.tsx and ExaminerLogin.tsx
-app.post('/api/auth/:role/login', (req: Request, res: Response) => {
-  const { role } = req.params;
-  const { email, password, photo } = req.body; // 'photo' is for face verification
+app.post('/api/auth/:role/login', async (req: Request, res: Response) => {
+  try {
+    // Check MongoDB connection
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ 
+        message: 'Database connection not available. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE'
+      });
+    }
 
-  const user = findUser(email, role as 'student' | 'examiner');
+    const { role } = req.params;
+    const { email, password, photo } = req.body; // 'photo' is for face verification
 
-  // Simplified login logic: check email/password/role. Mock face verification passes if user exists.
-  if (!user || user.password !== password) {
-    return res.status(401).json({ message: 'Invalid credentials or face verification failed.' });
+    // Validate input
+    if (!email || !password || !photo) {
+      return res.status(400).json({ 
+        message: 'Email, password, and photo are required.',
+        error: 'MISSING_FIELDS'
+      });
+    }
+
+    // Validate role
+    if (role !== 'student' && role !== 'examiner') {
+      return res.status(400).json({ 
+        message: 'Invalid role. Must be "student" or "examiner".',
+        error: 'INVALID_ROLE'
+      });
+    }
+
+    // Find user in MongoDB
+    const user = await User.findOne({ email: email.toLowerCase().trim(), role });
+    
+    if (!user) {
+      return res.status(401).json({ 
+        message: 'Invalid email or password.',
+        error: 'INVALID_CREDENTIALS'
+      });
+    }
+
+    // Verify password using bcrypt comparison
+    const isPasswordValid = await user.comparePassword(password);
+    
+    if (!isPasswordValid) {
+      return res.status(401).json({ 
+        message: 'Invalid email or password.',
+        error: 'INVALID_CREDENTIALS'
+      });
+    }
+
+    // Validate and extract face descriptor from login photo
+    const faceValidation = await validateFace(photo);
+    if (!faceValidation.success || !faceValidation.descriptor) {
+      return res.status(400).json({
+        message: faceValidation.error || 'Face validation failed. Please ensure your face is clearly visible.',
+        error: 'FACE_DETECTION_FAILED',
+        details: faceValidation.error
+      });
+    }
+
+    // Verify face descriptor exists in user record
+    if (!user.faceDescriptor || !Array.isArray(user.faceDescriptor) || user.faceDescriptor.length === 0) {
+      return res.status(500).json({
+        message: 'Face data not found for this user. Please contact support.',
+        error: 'FACE_DATA_MISSING'
+      });
+    }
+
+    // Compare face with stored face descriptor
+    const storedDescriptor = new Float32Array(user.faceDescriptor);
+    const faceMatch = compareFaces(faceValidation.descriptor, storedDescriptor);
+
+    if (!faceMatch) {
+      return res.status(401).json({
+        message: 'Face verification failed. The photo does not match your registered face.',
+        error: 'FACE_MISMATCH'
+      });
+    }
+    
+    // Success - return user info (without password or face descriptor)
+    res.status(200).json({ 
+      message: 'Authentication Successful!', 
+      user: { 
+        id: (user._id as any).toString(), 
+        name: user.fullName, 
+        role: user.role,
+        email: user.email
+      } 
+    });
+  } catch (error: any) {
+    console.error('Login error:', error);
+    
+    // Handle MongoDB connection errors
+    if (error.name === 'MongoServerError' || error.name === 'MongoNetworkError') {
+      return res.status(503).json({ 
+        message: 'Database connection error. Please try again later.',
+        error: 'DATABASE_ERROR'
+      });
+    }
+    
+    res.status(500).json({ 
+      message: 'Login failed. Please try again.',
+      error: 'INTERNAL_ERROR'
+    });
   }
-
-  // Success. In a real app, a token would be returned.
-  res.status(200).json({ message: 'Authentication Successful!', user: { id: user.id, name: user.fullName, role: user.role } });
 });
 
 
@@ -145,29 +334,36 @@ app.post('/api/auth/:role/login', (req: Request, res: Response) => {
 // ===============================
 
 // Fetches data for ExaminerDashboard.tsx
-app.get('/api/examiner/dashboard', (req: Request, res: Response) => {
-  const totalTests = MOCK_DB.tests.length;
-  const completedTests = MOCK_DB.tests.filter(t => t.status === 'completed').length;
-  const scheduledTests = totalTests - completedTests;
-  const activeStudents = MOCK_DB.users.filter(u => u.role === 'student').length + MOCK_DB.results.length;
+app.get('/api/examiner/dashboard', async (req: Request, res: Response) => {
+  try {
+    const totalTests = MOCK_DB.tests.length;
+    const completedTests = MOCK_DB.tests.filter(t => t.status === 'completed').length;
+    const scheduledTests = totalTests - completedTests;
+    // Count students from MongoDB
+    const studentCount = await User.countDocuments({ role: 'student' });
+    const activeStudents = studentCount + MOCK_DB.results.length;
 
-  const dashboardData = {
-    stats: [
-      { label: "Total Tests", value: totalTests.toString(), color: "primary" },
-      { label: "Active Students", value: activeStudents.toString(), color: "secondary" },
-      { label: "Completed", value: completedTests.toString(), color: "success" },
-      { label: "Scheduled", value: scheduledTests.toString(), color: "warning" },
-    ],
-    tests: MOCK_DB.tests.map(t => ({ 
-      id: t.id, 
-      name: t.name, 
-      date: t.date, 
-      students: t.studentsEnrolled, 
-      status: t.status 
-    })).reverse(),
-  };
+    const dashboardData = {
+      stats: [
+        { label: "Total Tests", value: totalTests.toString(), color: "primary" },
+        { label: "Active Students", value: activeStudents.toString(), color: "secondary" },
+        { label: "Completed", value: completedTests.toString(), color: "success" },
+        { label: "Scheduled", value: scheduledTests.toString(), color: "warning" },
+      ],
+      tests: MOCK_DB.tests.map(t => ({ 
+        id: t.id, 
+        name: t.name, 
+        date: t.date, 
+        students: t.studentsEnrolled, 
+        status: t.status 
+      })).reverse(),
+    };
 
-  res.status(200).json(dashboardData);
+    res.status(200).json(dashboardData);
+  } catch (error: any) {
+    console.error('Dashboard error:', error);
+    res.status(500).json({ message: 'Failed to fetch dashboard data.' });
+  }
 });
 
 // Used by CreateTest.tsx to save a new test
@@ -371,46 +567,134 @@ app.get('/api/examiner/report/:studentId/:testId', (req: Request, res: Response)
 //         STUDENT ROUTES
 // ===============================
 
-// Used by StudentTest.tsx to submit answers and mock scoring
-app.post('/api/student/submit-test', (req: Request, res: Response) => {
-    const { userId, testId, answers } = req.body;
-    
-    // In a real app, this would perform scoring and save data.
-    res.status(200).json({ 
-        message: 'Test submitted successfully.', 
-        // Mock score and trust data
-        actualScore: Math.floor(Math.random() * 100), 
-        trustScore: Math.floor(Math.random() * 100)
-    });
+// Used by StudentTest.tsx to submit answers and save recording
+app.post('/api/student/submit-test', async (req: Request, res: Response) => {
+    try {
+        // Check MongoDB connection
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({ 
+                message: 'Database connection not available. Please try again later.',
+                error: 'DATABASE_UNAVAILABLE'
+            });
+        }
+
+        const { studentId, testId, answers, videoBlob, audioBlob, startTime, endTime, violations } = req.body;
+        
+        // Validate required fields
+        if (!studentId || !testId || !videoBlob || !audioBlob || !startTime || !endTime) {
+            return res.status(400).json({ 
+                message: 'Missing required fields: studentId, testId, videoBlob, audioBlob, startTime, endTime',
+                error: 'MISSING_FIELDS'
+            });
+        }
+
+        // Calculate duration
+        const duration = Math.floor((new Date(endTime).getTime() - new Date(startTime).getTime()) / 1000);
+
+        // Convert base64 blobs to buffers (handle data URL format)
+        const videoBase64Data = videoBlob.includes(',') 
+          ? videoBlob.split(',')[1] 
+          : videoBlob.replace(/^data:video\/\w+;base64,/, '');
+        const audioBase64Data = audioBlob.includes(',') 
+          ? audioBlob.split(',')[1] 
+          : audioBlob.replace(/^data:audio\/\w+;base64,/, '');
+        
+        const videoBuffer = Buffer.from(videoBase64Data, 'base64');
+        const audioBuffer = Buffer.from(audioBase64Data, 'base64');
+
+        // Create test recording document
+        const recording = new TestRecording({
+            studentId,
+            testId,
+            videoBlob: videoBuffer,
+            audioBlob: audioBuffer,
+            videoMimeType: 'video/webm',
+            audioMimeType: 'audio/webm',
+            duration,
+            startTime: new Date(startTime),
+            endTime: new Date(endTime),
+            answers: answers || {},
+            violations: violations || [],
+        });
+
+        await recording.save();
+
+        // Calculate mock scores (in production, calculate based on answers)
+        const actualScore = Math.floor(Math.random() * 100);
+        const violationCount = violations?.length || 0;
+        const trustScore = Math.max(0, 100 - (violationCount * 5));
+
+        res.status(200).json({ 
+            message: 'Test submitted successfully.', 
+            recordingId: (recording._id as any).toString(),
+            actualScore,
+            trustScore,
+            violationCount
+        });
+    } catch (error: any) {
+        console.error('Test submission error:', error);
+        
+        if (error.name === 'ValidationError') {
+            return res.status(400).json({ 
+                message: 'Validation failed',
+                error: 'VALIDATION_ERROR'
+            });
+        }
+        
+        res.status(500).json({ 
+            message: 'Failed to submit test. Please try again.',
+            error: 'INTERNAL_ERROR'
+        });
+    }
 });
 
 
-// --- Database Connection (for future MongoDB integration) ---
-// TODO: Implement MongoDB connection when ready
-// if (MONGODB_URI) {
-//   mongoose.connect(MONGODB_URI)
-//     .then(() => console.log('✓ MongoDB connected'))
-//     .catch((err) => console.error('MongoDB connection error:', err));
-// } else {
-//   console.log('⚠ MongoDB URI not configured. Using in-memory database.');
-// }
+// --- MongoDB Connection and Server Start ---
+async function startServer() {
+  // Load face recognition models first
+  try {
+    await loadFaceModels();
+  } catch (error: any) {
+    console.error('⚠ Face recognition models not loaded:', error.message);
+    console.error('⚠ Face verification will not work. Please download models from:');
+    console.error('⚠ https://github.com/justadudewhohacks/face-api.js-models');
+    console.error('⚠ Place them in: server/models/ directory');
+  }
 
-// --- Start Server ---
-app.listen(PORT, () => {
-  console.log(`\nPariksha AI Backend server is running on port ${PORT}`);
-  console.log(`CORS enabled for origin: ${CORS_ORIGIN || 'Not set (check CORS_ORIGIN in .env)'}`);
+  // Connect to MongoDB if URI is provided
   if (MONGODB_URI) {
-    console.log('✓ MongoDB URI configured');
+    try {
+      await mongoose.connect(MONGODB_URI);
+      console.log('✓ MongoDB connected successfully');
+    } catch (err: any) {
+      console.error('✗ MongoDB connection error:', err);
+      console.error('⚠ Server will continue but authentication will fail. Please check your MONGODB_URI in .env file.');
+    }
   } else {
-    console.log('⚠ MongoDB URI not configured. Using in-memory database.');
+    console.log('⚠ MongoDB URI not configured. Please set MONGODB_URI in your .env file.');
+    console.log('⚠ Authentication features will not work without MongoDB connection.');
   }
-  if (OPENAI_API_KEY) {
-    console.log('✓ OpenAI API key configured');
-  }
-  if (ANTHROPIC_API_KEY) {
-    console.log('✓ Anthropic API key configured');
-  }
-  if (!OPENAI_API_KEY && !ANTHROPIC_API_KEY) {
-    console.log('⚠ No AI API keys configured. AI generation will use mock mode.');
-  }
-});
+
+  // Start the server
+  app.listen(PORT, () => {
+    console.log(`\nPariksha AI Backend server is running on port ${PORT}`);
+    console.log(`CORS enabled for origin: ${CORS_ORIGIN || 'Not set (check CORS_ORIGIN in .env)'}`);
+    if (MONGODB_URI) {
+      console.log('✓ MongoDB URI configured');
+    } else {
+      console.log('⚠ MongoDB URI not configured. Authentication will not work.');
+    }
+    if (OPENAI_API_KEY) {
+      console.log('✓ OpenAI API key configured');
+    }
+    if (ANTHROPIC_API_KEY) {
+      console.log('✓ Anthropic API key configured');
+    }
+    if (!OPENAI_API_KEY && !ANTHROPIC_API_KEY) {
+      console.log('⚠ No AI API keys configured. AI generation will use mock mode.');
+    }
+  });
+}
+
+// Start the server
+startServer();

@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ArrowLeft, UserPlus } from "lucide-react";
+import { ArrowLeft, UserPlus, Loader2 } from "lucide-react";
 import WebcamCapture from "@/components/WebcamCapture";
 import { useToast } from "@/hooks/use-toast";
 import { getApiUrl } from "@/lib/api-config";
@@ -12,6 +12,7 @@ import { getApiUrl } from "@/lib/api-config";
 const StudentRegister = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const [isLoading, setIsLoading] = useState(false);
   const [formData, setFormData] = useState({
     fullName: '',
     email: '',
@@ -41,6 +42,7 @@ const StudentRegister = () => {
       return;
     }
 
+    setIsLoading(true);
     try {
       const apiUrl = getApiUrl('/api/auth/student/register');
       console.log('Registering with URL:', apiUrl);
@@ -85,6 +87,8 @@ const StudentRegister = () => {
         description: errorMessage,
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -96,6 +100,7 @@ const StudentRegister = () => {
             variant="ghost" 
             className="w-fit mb-4"
             onClick={() => navigate('/')}
+            disabled={isLoading}
           >
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back
@@ -120,6 +125,7 @@ const StudentRegister = () => {
                 value={formData.fullName}
                 onChange={(e) => setFormData({...formData, fullName: e.target.value})}
                 required
+                disabled={isLoading}
               />
             </div>
 
@@ -132,6 +138,7 @@ const StudentRegister = () => {
                 value={formData.email}
                 onChange={(e) => setFormData({...formData, email: e.target.value})}
                 required
+                disabled={isLoading}
               />
             </div>
 
@@ -145,6 +152,7 @@ const StudentRegister = () => {
                   value={formData.password}
                   onChange={(e) => setFormData({...formData, password: e.target.value})}
                   required
+                  disabled={isLoading}
                 />
               </div>
 
@@ -157,6 +165,7 @@ const StudentRegister = () => {
                   value={formData.confirmPassword}
                   onChange={(e) => setFormData({...formData, confirmPassword: e.target.value})}
                   required
+                  disabled={isLoading}
                 />
               </div>
             </div>
@@ -166,12 +175,22 @@ const StudentRegister = () => {
               <WebcamCapture 
                 onCapture={(imageData) => setFormData({...formData, photo: imageData})}
                 capturedImage={formData.photo}
+                disabled={isLoading}
               />
             </div>
 
-            <Button type="submit" className="w-full" size="lg">
-              <UserPlus className="mr-2 h-4 w-4" />
-              Register
+            <Button type="submit" className="w-full" size="lg" disabled={isLoading}>
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Registering...
+                </>
+              ) : (
+                <>
+                  <UserPlus className="mr-2 h-4 w-4" />
+                  Register
+                </>
+              )}
             </Button>
           </form>
         </CardContent>

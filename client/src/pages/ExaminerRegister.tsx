@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ArrowLeft, ShieldCheck } from "lucide-react";
+import { ArrowLeft, ShieldCheck, Loader2 } from "lucide-react";
 import WebcamCapture from "@/components/WebcamCapture";
 import { useToast } from "@/hooks/use-toast";
 import { getApiUrl } from "@/lib/api-config";
@@ -12,6 +12,7 @@ import { getApiUrl } from "@/lib/api-config";
 const ExaminerRegister = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const [isLoading, setIsLoading] = useState(false);
   const [formData, setFormData] = useState({
     fullName: '',
     email: '',
@@ -41,6 +42,7 @@ const ExaminerRegister = () => {
       return;
     }
 
+    setIsLoading(true);
     try {
       const response = await fetch(getApiUrl('/api/auth/examiner/register'), {
         method: 'POST',
@@ -74,6 +76,8 @@ const ExaminerRegister = () => {
         description: "Failed to connect to server. Please try again.",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -85,6 +89,7 @@ const ExaminerRegister = () => {
             variant="ghost" 
             className="w-fit mb-4"
             onClick={() => navigate('/')}
+            disabled={isLoading}
           >
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back
@@ -109,6 +114,7 @@ const ExaminerRegister = () => {
                 value={formData.fullName}
                 onChange={(e) => setFormData({...formData, fullName: e.target.value})}
                 required
+                disabled={isLoading}
               />
             </div>
 
@@ -121,6 +127,7 @@ const ExaminerRegister = () => {
                 value={formData.email}
                 onChange={(e) => setFormData({...formData, email: e.target.value})}
                 required
+                disabled={isLoading}
               />
             </div>
 
@@ -134,6 +141,7 @@ const ExaminerRegister = () => {
                   value={formData.password}
                   onChange={(e) => setFormData({...formData, password: e.target.value})}
                   required
+                  disabled={isLoading}
                 />
               </div>
 
@@ -146,6 +154,7 @@ const ExaminerRegister = () => {
                   value={formData.confirmPassword}
                   onChange={(e) => setFormData({...formData, confirmPassword: e.target.value})}
                   required
+                  disabled={isLoading}
                 />
               </div>
             </div>
@@ -155,12 +164,22 @@ const ExaminerRegister = () => {
               <WebcamCapture 
                 onCapture={(imageData) => setFormData({...formData, photo: imageData})}
                 capturedImage={formData.photo}
+                disabled={isLoading}
               />
             </div>
 
-            <Button type="submit" className="w-full bg-secondary hover:bg-secondary/90" size="lg">
-              <ShieldCheck className="mr-2 h-4 w-4" />
-              Register as Examiner
+            <Button type="submit" className="w-full bg-secondary hover:bg-secondary/90" size="lg" disabled={isLoading}>
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Registering...
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="mr-2 h-4 w-4" />
+                  Register as Examiner
+                </>
+              )}
             </Button>
           </form>
         </CardContent>

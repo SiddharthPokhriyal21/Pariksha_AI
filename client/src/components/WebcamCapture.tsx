@@ -6,9 +6,10 @@ import { useToast } from "@/hooks/use-toast";
 interface WebcamCaptureProps {
   onCapture: (imageData: string) => void;
   capturedImage?: string;
+  disabled?: boolean;
 }
 
-const WebcamCapture = ({ onCapture, capturedImage }: WebcamCaptureProps) => {
+const WebcamCapture = ({ onCapture, capturedImage, disabled = false }: WebcamCaptureProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -157,21 +158,21 @@ const WebcamCapture = ({ onCapture, capturedImage }: WebcamCaptureProps) => {
 
       <div className="flex gap-3">
         {!capturedImage && isStreaming && (
-          <Button onClick={capturePhoto} className="flex-1" disabled={isLoading}>
+          <Button onClick={capturePhoto} className="flex-1" disabled={isLoading || disabled}>
             <Camera className="mr-2 h-4 w-4" />
             Capture
           </Button>
         )}
         
         {!capturedImage && !isStreaming && !isLoading && (
-          <Button onClick={startCamera} className="flex-1">
+          <Button onClick={startCamera} className="flex-1" disabled={disabled}>
             <Camera className="mr-2 h-4 w-4" />
             Start Camera
           </Button>
         )}
 
         {capturedImage && (
-          <Button onClick={retakePhoto} variant="outline" className="flex-1">
+          <Button onClick={retakePhoto} variant="outline" className="flex-1" disabled={disabled}>
             <RotateCcw className="mr-2 h-4 w-4" />
             Retake Photo
           </Button>

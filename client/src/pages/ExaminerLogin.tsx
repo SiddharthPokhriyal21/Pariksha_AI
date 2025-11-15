@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ArrowLeft, LogIn } from "lucide-react";
+import { ArrowLeft, LogIn, Loader2 } from "lucide-react";
 import WebcamCapture from "@/components/WebcamCapture";
 import { useToast } from "@/hooks/use-toast";
 import { getApiUrl } from "@/lib/api-config";
@@ -12,6 +12,7 @@ import { getApiUrl } from "@/lib/api-config";
 const ExaminerLogin = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const [isLoading, setIsLoading] = useState(false);
   const [formData, setFormData] = useState({
     email: '',
     password: '',
@@ -30,30 +31,38 @@ const ExaminerLogin = () => {
       return;
     }
 
-    // TODO: Verify with backend
-    // console.log("Examiner Login:", formData);
-    
-    const response = await fetch(getApiUrl('/api/auth/examiner/login'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(formData)
-    });
-    
-    if (response.ok) {
-      const data = await response.json();
-      // Store user token/info, then navigate
-      toast({
-        title: "Authentication Successful!",
-        description: data.message,
+    setIsLoading(true);
+    try {
+      const response = await fetch(getApiUrl('/api/auth/examiner/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData)
       });
-      navigate('/examiner/dashboard');
-    } else {
-      const error = await response.json();
+      
+      if (response.ok) {
+        const data = await response.json();
+        // Store user token/info, then navigate
+        toast({
+          title: "Authentication Successful!",
+          description: data.message,
+        });
+        navigate('/examiner/dashboard');
+      } else {
+        const error = await response.json();
+        toast({
+          title: "Login Failed",
+          description: error.message || "An unexpected error occurred.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
       toast({
-        title: "Login Failed",
-        description: error.message || "An unexpected error occurred.",
+        title: "Error",
+        description: "Failed to connect to server. Please try again.",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -65,6 +74,7 @@ const ExaminerLogin = () => {
             variant="ghost" 
             className="w-fit mb-4"
             onClick={() => navigate('/')}
+            disabled={isLoading}
           >
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back
@@ -90,6 +100,7 @@ const ExaminerLogin = () => {
                 value={formData.email}
                 onChange={(e) => setFormData({...formData, email: e.target.value})}
                 required
+                disabled={isLoading}
               />
             </div>
 
@@ -102,6 +113,7 @@ const ExaminerLogin = () => {
                 value={formData.password}
                 onChange={(e) => setFormData({...formData, password: e.target.value})}
                 required
+                disabled={isLoading}
               />
             </div>
 
@@ -113,12 +125,22 @@ const ExaminerLogin = () => {
               <WebcamCapture 
                 onCapture={(imageData) => setFormData({...formData, photo: imageData})}
                 capturedImage={formData.photo}
+                disabled={isLoading}
               />
             </div>
 
-            <Button type="submit" className="w-full bg-secondary hover:bg-secondary/90" size="lg">
-              <LogIn className="mr-2 h-4 w-4" />
-              Login
+            <Button type="submit" className="w-full bg-secondary hover:bg-secondary/90" size="lg" disabled={isLoading}>
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Logging in...
+                </>
+              ) : (
+                <>
+                  <LogIn className="mr-2 h-4 w-4" />
+                  Login
+                </>
+              )}
             </Button>
 
             <p className="text-center text-sm text-muted-foreground">
@@ -127,6 +149,7 @@ const ExaminerLogin = () => {
                 variant="link" 
                 className="p-0 h-auto"
                 onClick={() => navigate('/examiner/register')}
+                disabled={isLoading}
               >
                 Register here
               </Button>

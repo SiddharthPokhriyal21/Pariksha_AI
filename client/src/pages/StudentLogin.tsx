@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ArrowLeft, LogIn } from "lucide-react";
+import { ArrowLeft, LogIn, Loader2 } from "lucide-react";
 import WebcamCapture from "@/components/WebcamCapture";
 import { useToast } from "@/hooks/use-toast";
 import { getApiUrl } from "@/lib/api-config";
@@ -12,6 +12,7 @@ import { getApiUrl } from "@/lib/api-config";
 const StudentLogin = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const [isLoading, setIsLoading] = useState(false);
   const [formData, setFormData] = useState({
     email: '',
     password: '',
@@ -30,6 +31,7 @@ const StudentLogin = () => {
       return;
     }
 
+    setIsLoading(true);
     try {
       const response = await fetch(getApiUrl('/api/auth/student/login'), {
         method: 'POST',
@@ -58,6 +60,8 @@ const StudentLogin = () => {
         description: "Failed to connect to server. Please try again.",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -69,6 +73,7 @@ const StudentLogin = () => {
             variant="ghost" 
             className="w-fit mb-4"
             onClick={() => navigate('/')}
+            disabled={isLoading}
           >
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back
@@ -94,6 +99,7 @@ const StudentLogin = () => {
                 value={formData.email}
                 onChange={(e) => setFormData({...formData, email: e.target.value})}
                 required
+                disabled={isLoading}
               />
             </div>
 
@@ -106,6 +112,7 @@ const StudentLogin = () => {
                 value={formData.password}
                 onChange={(e) => setFormData({...formData, password: e.target.value})}
                 required
+                disabled={isLoading}
               />
             </div>
 
@@ -117,12 +124,22 @@ const StudentLogin = () => {
               <WebcamCapture 
                 onCapture={(imageData) => setFormData({...formData, photo: imageData})}
                 capturedImage={formData.photo}
+                disabled={isLoading}
               />
             </div>
 
-            <Button type="submit" className="w-full" size="lg">
-              <LogIn className="mr-2 h-4 w-4" />
-              Login
+            <Button type="submit" className="w-full" size="lg" disabled={isLoading}>
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Logging in...
+                </>
+              ) : (
+                <>
+                  <LogIn className="mr-2 h-4 w-4" />
+                  Login
+                </>
+              )}
             </Button>
 
             <p className="text-center text-sm text-muted-foreground">
@@ -131,6 +148,7 @@ const StudentLogin = () => {
                 variant="link" 
                 className="p-0 h-auto"
                 onClick={() => navigate('/student/register')}
+                disabled={isLoading}
               >
                 Register here
               </Button>
