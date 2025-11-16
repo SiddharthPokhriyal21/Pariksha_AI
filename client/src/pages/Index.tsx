@@ -1,10 +1,25 @@
+import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { GraduationCap, ShieldCheck, UserCheck } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { getApiUrl } from "@/lib/api-config";
 
 const Index = () => {
   const navigate = useNavigate();
+
+  // Load face recognition models when homepage loads
+  useEffect(() => {
+    const loadModels = async () => {
+      try {
+        await fetch(getApiUrl('/api/load-models'));
+        console.log('✓ Face recognition models loading initiated');
+      } catch (error) {
+        console.warn('⚠ Could not trigger model loading:', error);
+      }
+    };
+    loadModels();
+  }, []);
 
   return (
     <div className="min-h-screen bg-gradient-hero">
@@ -16,7 +31,7 @@ const Index = () => {
             </div>
           </div>
           <h1 className="text-5xl font-bold mb-4 bg-gradient-primary bg-clip-text text-transparent">
-            SecureExam Pro
+            Pariksha Ai
           </h1>
           <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
             Advanced AI-powered exam proctoring platform ensuring academic integrity

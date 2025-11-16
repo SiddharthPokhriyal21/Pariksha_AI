@@ -93,7 +93,7 @@ const StudentRules = () => {
             <div className="flex gap-4">
               <Button 
                 variant="outline" 
-                onClick={() => navigate('/student/login')}
+                onClick={() => navigate('/student/tests')}
                 className="flex-1"
               >
                 Go Back

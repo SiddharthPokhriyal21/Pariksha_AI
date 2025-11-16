@@ -35,8 +35,8 @@ export async function loadFaceModels(): Promise<void> {
 
     // Check if required model files exist
     const requiredFiles = [
-      'ssd_mobilenetv1_model-weights_manifest.json',
-      'ssd_mobilenetv1_model-shard1',
+      'tiny_face_detector_model-weights_manifest.json',
+      'tiny_face_detector_model-shard1',
       'face_landmark_68_model-weights_manifest.json',
       'face_landmark_68_model-shard1',
       'face_recognition_model-weights_manifest.json',
@@ -57,11 +57,11 @@ export async function loadFaceModels(): Promise<void> {
     
     // Load models with individual error handling
     try {
-      await faceapi.nets.ssdMobilenetv1.loadFromDisk(MODEL_PATH);
-      console.log('  ✓ SSD Mobilenet v1 loaded');
+      await faceapi.nets.tinyFaceDetector.loadFromDisk(MODEL_PATH);
+      console.log('  ✓ Tiny Face Detector loaded');
     } catch (err: any) {
-      console.error('  ✗ Failed to load SSD Mobilenet v1:', err.message);
-      throw new Error(`Failed to load SSD Mobilenet model: ${err.message}`);
+      console.error('  ✗ Failed to load Tiny Face Detector:', err.message);
+      throw new Error(`Failed to load Tiny Face Detector model: ${err.message}`);
     }
     
     try {
@@ -116,9 +116,9 @@ export async function detectAndExtractFaceDescriptor(
     const ctx = canvas.getContext('2d');
     ctx.drawImage(img, 0, 0);
 
-    // Detect faces in the image
+    // Detect faces in the image using TinyFaceDetector
     const detections = await faceapi
-      .detectAllFaces(canvas as any)
+      .detectAllFaces(canvas as any, new faceapi.TinyFaceDetectorOptions())
       .withFaceLandmarks()
       .withFaceDescriptors();
 

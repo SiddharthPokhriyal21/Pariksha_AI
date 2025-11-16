@@ -41,11 +41,15 @@ const StudentLogin = () => {
 
       if (response.ok) {
         const data = await response.json();
+        // Store student ID for later use
+        if (data.user?.id) {
+          localStorage.setItem('studentId', data.user.id);
+        }
         toast({
           title: "Authentication Successful!",
           description: data.message || "Welcome back!",
         });
-        navigate('/student/rules');
+        navigate('/student/tests');
       } else {
         const error = await response.json();
         toast({

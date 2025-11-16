@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
-import { Camera, Clock, Eye } from "lucide-react";
+import { Camera, Clock, Eye, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
@@ -17,6 +17,7 @@ const StudentTest = () => {
   const [answers, setAnswers] = useState<Record<number, string>>({});
   const [isRecording, setIsRecording] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showLiveFeed, setShowLiveFeed] = useState(true);
   
   // Refs for recording
   const liveFeedRef = useRef<HTMLVideoElement>(null);
@@ -27,6 +28,7 @@ const StudentTest = () => {
   const combinedStreamRef = useRef<MediaStream | null>(null);
   const startTimeRef = useRef<Date | null>(null);
   const violationsRef = useRef<Array<{ timestamp: Date; type: string; severity: 'low' | 'medium' | 'high' }>>([]);
+  const chunkIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
   // Mock questions
   const questions = [
@@ -86,9 +88,13 @@ const StudentTest = () => {
           mimeType: 'video/webm;codecs=vp8'
         });
 
+        // Store chunks temporarily for 10-second intervals (outside async function)
+        let tempVideoChunks: Blob[] = [];
+
         videoRecorder.ondataavailable = (event) => {
           if (event.data.size > 0) {
-            videoChunksRef.current.push(event.data);
+            tempVideoChunks.push(event.data);
+            videoChunksRef.current.push(event.data); // Keep for final submission
           }
         };
 
@@ -104,12 +110,64 @@ const StudentTest = () => {
           }
         };
 
-        // Start both recorders
+        // Function to send 10-second chunk to server
+        const sendChunkToServer = async () => {
+          if (tempVideoChunks.length === 0) return;
+
+          try {
+            // Combine chunks into a single blob
+            const chunkBlob = new Blob(tempVideoChunks, { type: 'video/webm' });
+            
+            // Convert to base64
+            const chunkBase64 = await blobToBase64(chunkBlob);
+            
+            // Get student ID and test ID
+            const studentId = localStorage.getItem('studentId') || 'unknown';
+            const testId = localStorage.getItem('testId') || 'unknown';
+
+            // Send chunk to server for ML processing
+            const response = await fetch(getApiUrl('/api/student/proctor-chunk'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                studentId,
+                testId,
+                videoChunk: chunkBase64,
+                timestamp: new Date().toISOString(),
+              }),
+            });
+
+            if (response.ok) {
+              const data = await response.json();
+              if (data.violationDetected) {
+                // Log violation locally (for final submission)
+                violationsRef.current.push({
+                  timestamp: new Date(),
+                  type: data.violationType || 'Suspicious behavior detected',
+                  severity: data.severity || 'medium',
+                });
+              }
+            }
+
+            // Clear temp chunks after sending (discard)
+            tempVideoChunks.length = 0;
+          } catch (error) {
+            console.error('Error sending chunk to server:', error);
+            // Continue recording even if chunk send fails
+          }
+        };
+
+        // Start both recorders with 10-second timeslice
         videoRecorder.start(1000); // Collect data every second
         audioRecorder.start(1000);
         
         videoRecorderRef.current = videoRecorder;
         audioRecorderRef.current = audioRecorder;
+
+        // Send chunks every 10 seconds
+        chunkIntervalRef.current = setInterval(() => {
+          sendChunkToServer();
+        }, 10000); // 10 seconds
 
         setIsRecording(true);
         startTimeRef.current = new Date();
@@ -152,6 +210,9 @@ const StudentTest = () => {
     return () => {
       isMounted = false;
       // Cleanup
+      if (chunkIntervalRef.current) {
+        clearInterval(chunkIntervalRef.current);
+      }
       if (combinedStreamRef.current) {
         combinedStreamRef.current.getTracks().forEach(track => track.stop());
       }
@@ -181,6 +242,19 @@ const StudentTest = () => {
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only run once on mount
+
+  // Ensure video stream is properly set when live feed becomes visible
+  useEffect(() => {
+    if (showLiveFeed && liveFeedRef.current && combinedStreamRef.current) {
+      // Re-initialize video stream when feed becomes visible
+      if (liveFeedRef.current.srcObject !== combinedStreamRef.current) {
+        liveFeedRef.current.srcObject = combinedStreamRef.current;
+      }
+      liveFeedRef.current.play().catch((error) => {
+        console.error('Error playing video:', error);
+      });
+    }
+  }, [showLiveFeed]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -300,51 +374,69 @@ const StudentTest = () => {
 
   return (
     <div className="min-h-screen bg-gradient-hero p-4 relative">
-      {/* Live Camera Feed - Top Right Corner */}
-      <div className="fixed top-4 right-4 z-50 w-64 h-48 bg-black rounded-lg overflow-hidden shadow-2xl border-2 border-primary">
-        <video
-          ref={liveFeedRef}
-          autoPlay
-          playsInline
-          muted
-          className="w-full h-full object-cover"
-          style={{ transform: 'scaleX(-1)' }} // Mirror for better UX
-        />
-        <div className="absolute top-2 left-2 bg-red-500 text-white text-xs px-2 py-1 rounded flex items-center gap-1">
-          <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
-          REC
+      {/* Live Camera Feed - Top Right Corner (Toggleable) */}
+      {showLiveFeed && (
+        <div className="fixed top-16 right-4 z-50 w-64 h-48 bg-black rounded-lg overflow-hidden shadow-2xl border-2 border-primary">
+          <video
+            ref={liveFeedRef}
+            autoPlay
+            playsInline
+            muted
+            className="w-full h-full object-cover bg-black"
+            style={{ transform: 'scaleX(-1)' }} // Mirror for better UX
+            onLoadedMetadata={() => {
+              if (liveFeedRef.current) {
+                liveFeedRef.current.play().catch(console.error);
+              }
+            }}
+          />
+          <div className="absolute top-2 left-2 bg-red-500 text-white text-xs px-2 py-1 rounded flex items-center gap-1">
+            <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+            REC
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Proctoring Header */}
       <div className="bg-card border-b sticky top-0 z-40 shadow-md">
         <div className="container max-w-7xl mx-auto py-3 px-4">
           <div className="flex items-center justify-between flex-wrap gap-4">
+            {/* Left side: Pariksha AI and Proctoring Active */}
             <div className="flex items-center gap-4">
+              <h1 className="text-xl font-bold text-primary">Pariksha AI</h1>
               <Badge variant="outline" className="bg-success/10">
                 <Eye className="w-3 h-3 mr-1" />
                 Proctoring Active
               </Badge>
-              <Badge variant="outline" className="bg-primary/10">
-                <Camera className="w-3 h-3 mr-1" />
-                {isRecording ? 'Recording' : 'Not Recording'}
-              </Badge>
             </div>
             
+            {/* Right side: Timer and Proctoring Logo */}
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2 text-destructive font-semibold">
                 <Clock className="w-5 h-5" />
                 {formatTime(timeLeft)}
               </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setShowLiveFeed(!showLiveFeed)}
+                className="relative"
+                title={showLiveFeed ? "Hide Live Feed" : "Show Live Feed"}
+              >
+                <ShieldCheck className="w-5 h-5 text-primary" />
+                {isRecording && (
+                  <div className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                )}
+              </Button>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="container max-w-7xl mx-auto py-6 pr-72">
-        <div className="grid lg:grid-cols-4 gap-6">
-          {/* Main Test Area */}
-          <div className="lg:col-span-3 space-y-6">
+      <div className="container max-w-7xl mx-auto py-6">
+        <div className="grid lg:grid-cols-10 gap-6">
+          {/* Main Test Area - 70% width */}
+          <div className="lg:col-span-7 space-y-6">
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
@@ -376,6 +468,8 @@ const StudentTest = () => {
                     variant="outline" 
                     onClick={() => setCurrentQuestion(Math.max(0, currentQuestion - 1))}
                     disabled={currentQuestion === 0 || isSubmitting}
+                    size="lg"
+                    className="flex-1"
                   >
                     Previous
                   </Button>
@@ -383,6 +477,7 @@ const StudentTest = () => {
                     <Button 
                       onClick={() => setCurrentQuestion(currentQuestion + 1)}
                       className="flex-1"
+                      size="sm"
                       disabled={isSubmitting}
                     >
                       Next Question
@@ -401,8 +496,8 @@ const StudentTest = () => {
             </Card>
           </div>
 
-          {/* Question Navigator */}
-          <div className="space-y-6">
+          {/* Question Navigator - 30% width */}
+          <div className="lg:col-span-3 space-y-6">
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm">Question Navigator</CardTitle>
@@ -415,7 +510,7 @@ const StudentTest = () => {
                       variant={currentQuestion === index ? "default" : answers[index] ? "outline" : "ghost"}
                       size="sm"
                       onClick={() => setCurrentQuestion(index)}
-                      className="w-full"
+                      className="w-full border-2 border-border aspect-square"
                       disabled={isSubmitting}
                     >
                       {index + 1}

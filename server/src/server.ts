@@ -5,8 +5,11 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import User from './models/User';
+import Test from './models/Test';
 import TestRecording from './models/TestRecording';
+import Violation from './models/Violation';
 import { loadFaceModels, validateFace, compareFaces } from './utils/faceRecognition';
+import { processVideoChunkWithML, extractFrameFromVideo } from './utils/mlProctoring';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -92,6 +95,19 @@ app.use(bodyParser.json({ limit: '500mb' }));
 // --- Utility Functions ---
 const getNextId = (arr: any[]) => (arr.length ? Math.max(...arr.map(i => i.id)) + 1 : 1);
 
+
+// Endpoint to trigger model loading (called from homepage)
+app.get('/api/load-models', async (req: Request, res: Response) => {
+  try {
+    await loadFaceModels();
+    res.status(200).json({ message: 'Models loaded successfully' });
+  } catch (error: any) {
+    res.status(500).json({ 
+      message: 'Failed to load models',
+      error: error.message 
+    });
+  }
+});
 
 // ===============================
 //         AUTH ROUTES
@@ -367,20 +383,78 @@ app.get('/api/examiner/dashboard', async (req: Request, res: Response) => {
 });
 
 // Used by CreateTest.tsx to save a new test
-app.post('/api/examiner/tests', (req: Request, res: Response) => {
-  const { testName, questions } = req.body;
-  
-  const newTest: Test = {
-    id: getNextId(MOCK_DB.tests),
-    name: testName,
-    questions: questions,
-    status: 'scheduled',
-    date: new Date().toISOString().split('T')[0], // Today's date
-    studentsEnrolled: 10, // Mock value
-  };
-  MOCK_DB.tests.push(newTest);
+app.post('/api/examiner/tests', async (req: Request, res: Response) => {
+  try {
+    // Check MongoDB connection
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ 
+        message: 'Database connection not available. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE'
+      });
+    }
 
-  res.status(201).json({ message: 'Test created successfully', testId: newTest.id });
+    const { testName, description, questions, scheduledDate, duration, enrolledStudents, examinerId } = req.body;
+    
+    if (!testName || !questions || !Array.isArray(questions) || questions.length === 0) {
+      return res.status(400).json({ 
+        message: 'Test name and questions are required.',
+        error: 'MISSING_FIELDS'
+      });
+    }
+
+    // Get examiner ID from request (you may need to add authentication middleware)
+    const examiner = examinerId || 'unknown'; // TODO: Get from auth token
+
+    // Create test in MongoDB
+    const newTest = new Test({
+      name: testName,
+      description: description || '',
+      examinerId: examiner,
+      questions: questions.map((q: any, index: number) => ({
+        id: index + 1,
+        question: q.question,
+        options: q.options,
+        correctAnswer: q.correctAnswer
+      })),
+      status: 'scheduled',
+      scheduledDate: scheduledDate ? new Date(scheduledDate) : new Date(),
+      duration: duration || 60, // Default 60 minutes
+      enrolledStudents: enrolledStudents || [] // Array of student IDs
+    });
+
+    await newTest.save();
+
+    // Also add to MOCK_DB for backward compatibility (if needed)
+    const mockTest: Test = {
+      id: getNextId(MOCK_DB.tests),
+      name: testName,
+      questions: questions,
+      status: 'scheduled',
+      date: new Date().toISOString().split('T')[0], // Today's date
+      studentsEnrolled: enrolledStudents?.length || 0,
+    };
+    MOCK_DB.tests.push(mockTest);
+
+    res.status(201).json({ 
+      message: 'Test created successfully', 
+      testId: (newTest._id as any).toString(),
+      mongoTestId: (newTest._id as any).toString()
+    });
+  } catch (error: any) {
+    console.error('Create test error:', error);
+    
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ 
+        message: 'Validation failed',
+        error: 'VALIDATION_ERROR'
+      });
+    }
+    
+    res.status(500).json({ 
+      message: 'Failed to create test. Please try again.',
+      error: 'INTERNAL_ERROR'
+    });
+  }
 });
 
 // AI generation API for CreateTest.tsx
@@ -567,6 +641,186 @@ app.get('/api/examiner/report/:studentId/:testId', (req: Request, res: Response)
 //         STUDENT ROUTES
 // ===============================
 
+// Get enrolled tests for a student
+app.get('/api/student/tests', async (req: Request, res: Response) => {
+  try {
+    // Check MongoDB connection
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ 
+        message: 'Database connection not available. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE'
+      });
+    }
+
+    const { studentId } = req.query;
+
+    if (!studentId) {
+      return res.status(400).json({ 
+        message: 'Student ID is required',
+        error: 'MISSING_STUDENT_ID'
+      });
+    }
+
+    // Find tests where student is enrolled and status is scheduled or active
+    const tests = await Test.find({
+      enrolledStudents: studentId,
+      status: { $in: ['scheduled', 'active'] }
+    }).sort({ scheduledDate: 1 });
+
+    res.status(200).json({
+      tests: tests.map(test => ({
+        id: (test._id as any).toString(),
+        name: test.name,
+        description: test.description,
+        scheduledDate: test.scheduledDate,
+        duration: test.duration,
+        status: test.status,
+        questionCount: test.questions.length
+      }))
+    });
+  } catch (error: any) {
+    console.error('Get student tests error:', error);
+    res.status(500).json({ 
+      message: 'Failed to fetch tests. Please try again.',
+      error: 'INTERNAL_ERROR'
+    });
+  }
+});
+
+// Get a specific test by ID
+app.get('/api/student/test/:testId', async (req: Request, res: Response) => {
+  try {
+    // Check MongoDB connection
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ 
+        message: 'Database connection not available. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE'
+      });
+    }
+
+    const { testId } = req.params;
+    const { studentId } = req.query;
+
+    if (!studentId) {
+      return res.status(400).json({ 
+        message: 'Student ID is required',
+        error: 'MISSING_STUDENT_ID'
+      });
+    }
+
+    const test = await Test.findOne({
+      _id: testId,
+      enrolledStudents: studentId
+    });
+
+    if (!test) {
+      return res.status(404).json({ 
+        message: 'Test not found or you are not enrolled in this test',
+        error: 'TEST_NOT_FOUND'
+      });
+    }
+
+    // Return test without correct answers
+    res.status(200).json({
+      id: (test._id as any).toString(),
+      name: test.name,
+      description: test.description,
+      scheduledDate: test.scheduledDate,
+      duration: test.duration,
+      status: test.status,
+      questions: test.questions.map(q => ({
+        id: q.id,
+        question: q.question,
+        options: q.options
+        // Don't send correctAnswer to student
+      }))
+    });
+  } catch (error: any) {
+    console.error('Get test error:', error);
+    res.status(500).json({ 
+      message: 'Failed to fetch test. Please try again.',
+      error: 'INTERNAL_ERROR'
+    });
+  }
+});
+
+// Endpoint to receive 10-second video chunks for real-time proctoring
+app.post('/api/student/proctor-chunk', async (req: Request, res: Response) => {
+  try {
+    // Check MongoDB connection
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ 
+        message: 'Database connection not available. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE'
+      });
+    }
+
+    const { studentId, testId, videoChunk, timestamp } = req.body;
+    
+    // Validate required fields
+    if (!studentId || !testId || !videoChunk) {
+      return res.status(400).json({ 
+        message: 'Missing required fields: studentId, testId, videoChunk',
+        error: 'MISSING_FIELDS'
+      });
+    }
+
+    // Convert base64 video chunk to buffer
+    const videoBase64Data = videoChunk.includes(',') 
+      ? videoChunk.split(',')[1] 
+      : videoChunk.replace(/^data:video\/\w+;base64,/, '');
+    
+    const videoBuffer = Buffer.from(videoBase64Data, 'base64');
+
+    // Extract frame from video for ML processing
+    const frameImage = await extractFrameFromVideo(videoBuffer);
+
+    // Process video chunk with ML model
+    const mlResult = await processVideoChunkWithML(videoBuffer, frameImage);
+
+    // If violation detected, log it to database
+    if (mlResult.hasViolation && mlResult.violationType) {
+      const violation = new Violation({
+        studentId,
+        testId,
+        timestamp: timestamp ? new Date(timestamp) : new Date(),
+        type: mlResult.violationType,
+        severity: mlResult.severity || 'medium',
+        image: frameImage, // Store the frame image with the violation
+        confidence: mlResult.confidence,
+        description: mlResult.description,
+      });
+
+      await violation.save();
+      
+      console.log(`⚠ Violation detected for student ${studentId}: ${mlResult.violationType} (${mlResult.severity})`);
+      
+      // Return violation info (but don't block the test)
+      res.status(200).json({ 
+        message: 'Chunk processed successfully',
+        violationDetected: true,
+        violationType: mlResult.violationType,
+        severity: mlResult.severity,
+      });
+    } else {
+      // No violation, chunk processed and discarded
+      res.status(200).json({ 
+        message: 'Chunk processed successfully',
+        violationDetected: false,
+      });
+    }
+  } catch (error: any) {
+    console.error('Error processing proctor chunk:', error);
+    
+    // Don't fail the request - just log the error
+    // The test should continue even if chunk processing fails
+    res.status(200).json({ 
+      message: 'Chunk received (processing error logged)',
+      violationDetected: false,
+    });
+  }
+});
+
 // Used by StudentTest.tsx to submit answers and save recording
 app.post('/api/student/submit-test', async (req: Request, res: Response) => {
     try {
@@ -651,15 +905,14 @@ app.post('/api/student/submit-test', async (req: Request, res: Response) => {
 
 // --- MongoDB Connection and Server Start ---
 async function startServer() {
-  // Load face recognition models first
-  try {
-    await loadFaceModels();
-  } catch (error: any) {
+  // Load face recognition models asynchronously (non-blocking)
+  // Models will be loaded when homepage is accessed or when needed
+  loadFaceModels().catch((error: any) => {
     console.error('⚠ Face recognition models not loaded:', error.message);
     console.error('⚠ Face verification will not work. Please download models from:');
     console.error('⚠ https://github.com/justadudewhohacks/face-api.js-models');
     console.error('⚠ Place them in: server/models/ directory');
-  }
+  });
 
   // Connect to MongoDB if URI is provided
   if (MONGODB_URI) {

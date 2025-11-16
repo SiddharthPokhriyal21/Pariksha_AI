@@ -9,6 +9,7 @@ import ExaminerRegister from "./pages/ExaminerRegister";
 import StudentLogin from "./pages/StudentLogin";
 import ExaminerLogin from "./pages/ExaminerLogin";
 import StudentRules from "./pages/StudentRules";
+import StudentTestList from "./pages/StudentTestList";
 import StudentTest from "./pages/StudentTest";
 import ExaminerDashboard from "./pages/ExaminerDashboard";
 import CreateTest from "./pages/CreateTest";
@@ -30,6 +31,7 @@ const App = () => (
           <Route path="/examiner/register" element={<ExaminerRegister />} />
           <Route path="/student/login" element={<StudentLogin />} />
           <Route path="/examiner/login" element={<ExaminerLogin />} />
+          <Route path="/student/tests" element={<StudentTestList />} />
           <Route path="/student/rules" element={<StudentRules />} />
           <Route path="/student/test" element={<StudentTest />} />
           <Route path="/examiner/dashboard" element={<ExaminerDashboard />} />
