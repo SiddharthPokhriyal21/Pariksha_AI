@@ -57,7 +57,7 @@ ffmpeg -version
 ## Project Setup
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/SanchitNegi177/Pariksha_AI.git
 cd Pariksha_AI
 ```
 
@@ -77,8 +77,8 @@ The ML proctoring model requires Python 3.10+ with specific packages. Choose one
 #### Option A: Using Conda (Recommended)
 ```bash
 # Create conda environment
-conda create -n pariksha-ai python=3.10
-conda activate pariksha-ai
+conda create -n venv python=3.10
+conda activate venv
 
 # Install dependencies
 pip install -r server/src/ml/requirements.txt
