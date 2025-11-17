@@ -3,47 +3,116 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
-import { Camera, Clock, Eye, ShieldCheck } from "lucide-react";
+import { Clock, Eye, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { getApiUrl } from "@/lib/api-config";
 
+// Helper function to convert blob to base64
+const blobToBase64 = (blob: Blob): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      const base64 = result.split(',')[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+};
+
+interface TestQuestion {
+  id: number;
+  question: string;
+  options: string[];
+}
+
+interface StudentTestData {
+  id: string;
+  name: string;
+  duration: number;
+  questions: TestQuestion[];
+}
+
 const StudentTest = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [timeLeft, setTimeLeft] = useState(3600); // 60 minutes
+  const [timeLeft, setTimeLeft] = useState(0);
   const [currentQuestion, setCurrentQuestion] = useState(0);
-  const [answers, setAnswers] = useState<Record<number, string>>({});
+  const [answers, setAnswers] = useState<Record<number, number>>({});
   const [isRecording, setIsRecording] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showLiveFeed, setShowLiveFeed] = useState(true);
+  const [test, setTest] = useState<StudentTestData | null>(null);
+  const [isLoadingTest, setIsLoadingTest] = useState(true);
   
   // Refs for recording
   const liveFeedRef = useRef<HTMLVideoElement>(null);
   const videoRecorderRef = useRef<MediaRecorder | null>(null);
   const audioRecorderRef = useRef<MediaRecorder | null>(null);
-  const videoChunksRef = useRef<Blob[]>([]);
-  const audioChunksRef = useRef<Blob[]>([]);
   const combinedStreamRef = useRef<MediaStream | null>(null);
   const startTimeRef = useRef<Date | null>(null);
   const violationsRef = useRef<Array<{ timestamp: Date; type: string; severity: 'low' | 'medium' | 'high' }>>([]);
   const chunkIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
-  // Mock questions
-  const questions = [
-    {
-      id: 1,
-      question: "What is the capital of France?",
-      options: ["London", "Berlin", "Paris", "Madrid"]
-    },
-    {
-      id: 2,
-      question: "Which planet is known as the Red Planet?",
-      options: ["Venus", "Mars", "Jupiter", "Saturn"]
-    },
-    // Add more questions as needed
-  ];
+  const questions = test?.questions || [];
+
+  // Fetch test data
+  useEffect(() => {
+    const fetchTest = async () => {
+      const testId = localStorage.getItem('testId');
+      const studentId = localStorage.getItem('studentId');
+      const studentEmail = localStorage.getItem('studentEmail');
+
+      if (!testId || (!studentId && !studentEmail)) {
+        toast({
+          title: "Missing Test",
+          description: "Test information not found. Please select a test again.",
+          variant: "destructive",
+        });
+        navigate('/student/tests');
+        return;
+      }
+
+      try {
+        const queryParams = new URLSearchParams();
+        if (studentId) queryParams.append('studentId', studentId);
+        if (studentEmail) queryParams.append('email', studentEmail);
+
+        const response = await fetch(getApiUrl(`/api/student/test/${testId}?${queryParams.toString()}`));
+
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.message || 'Failed to load test data');
+        }
+
+        const data = await response.json();
+        setTest({
+          id: data.id,
+          name: data.name,
+          duration: data.duration,
+          questions: data.questions || [],
+        });
+        setTimeLeft((data.duration || 60) * 60);
+        setCurrentQuestion(0);
+        setAnswers({});
+      } catch (error: any) {
+        console.error('Failed to fetch test:', error);
+        toast({
+          title: "Error",
+          description: error.message || "Unable to load test. Please try again.",
+          variant: "destructive",
+        });
+        navigate('/student/tests');
+      } finally {
+        setIsLoadingTest(false);
+      }
+    };
+
+    fetchTest();
+  }, [navigate, toast]);
 
   // Initialize camera and recording
   useEffect(() => {
@@ -94,7 +163,6 @@ const StudentTest = () => {
         videoRecorder.ondataavailable = (event) => {
           if (event.data.size > 0) {
             tempVideoChunks.push(event.data);
-            videoChunksRef.current.push(event.data); // Keep for final submission
           }
         };
 
@@ -104,10 +172,8 @@ const StudentTest = () => {
           mimeType: 'audio/webm;codecs=opus'
         });
 
-        audioRecorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            audioChunksRef.current.push(event.data);
-          }
+        audioRecorder.ondataavailable = () => {
+          // Audio handled within combined stream; final submission no longer uploads blobs
         };
 
         // Function to send 10-second chunk to server
@@ -164,10 +230,10 @@ const StudentTest = () => {
         videoRecorderRef.current = videoRecorder;
         audioRecorderRef.current = audioRecorder;
 
-        // Send chunks every 10 seconds
+        // Send chunks every 6 seconds
         chunkIntervalRef.current = setInterval(() => {
           sendChunkToServer();
-        }, 10000); // 10 seconds
+        }, 6000); // 6 seconds
 
         setIsRecording(true);
         startTimeRef.current = new Date();
@@ -190,7 +256,7 @@ const StudentTest = () => {
               severity: event.severity
             });
           }
-        }, 10000); // Check every 10 seconds
+        }, 6000); // Check every 6 seconds
 
         return () => {
           clearInterval(violationInterval);
@@ -227,11 +293,12 @@ const StudentTest = () => {
 
   // Timer
   useEffect(() => {
+    if (!test) return;
+
     const timer = setInterval(() => {
       setTimeLeft((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
-          // Auto-submit when time runs out
           handleSubmitTest();
           return 0;
         }
@@ -241,7 +308,7 @@ const StudentTest = () => {
 
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Only run once on mount
+  }, [test]);
 
   // Ensure video stream is properly set when live feed becomes visible
   useEffect(() => {
@@ -263,7 +330,7 @@ const StudentTest = () => {
   };
 
   const handleSubmitTest = async () => {
-    if (isSubmitting) return;
+    if (isSubmitting || !test) return;
     
     setIsSubmitting(true);
 
@@ -303,18 +370,9 @@ const StudentTest = () => {
         combinedStreamRef.current.getTracks().forEach(track => track.stop());
       }
 
-      // Combine video chunks
-      const videoBlob = new Blob(videoChunksRef.current, { type: 'video/webm' });
-      const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-
-      // Convert to base64
-      const videoBase64 = await blobToBase64(videoBlob);
-      const audioBase64 = await blobToBase64(audioBlob);
-
-
       // Get student ID and test ID (you may need to get these from context/params)
       const studentId = localStorage.getItem('studentId') || 'unknown';
-      const testId = localStorage.getItem('testId') || 'test-1';
+      const testId = localStorage.getItem('testId') || test.id;
 
       // Submit test with recording
       const response = await fetch(getApiUrl('/api/student/submit-test'), {
@@ -324,8 +382,6 @@ const StudentTest = () => {
           studentId,
           testId,
           answers,
-          videoBlob: videoBase64,
-          audioBlob: audioBase64,
           startTime: startTimeRef.current?.toISOString(),
           endTime: new Date().toISOString(),
           violations: violationsRef.current
@@ -359,18 +415,36 @@ const StudentTest = () => {
     }
   };
 
-  // Helper function to convert blob to base64
-  const blobToBase64 = (blob: Blob): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64String = reader.result as string;
-        resolve(base64String);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  };
+  if (isLoadingTest) {
+    return (
+      <div className="min-h-screen bg-gradient-hero flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent mx-auto mb-4" />
+          <p className="text-lg font-semibold text-primary">Loading test...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!test || questions.length === 0) {
+    return (
+      <div className="min-h-screen bg-gradient-hero flex items-center justify-center">
+        <Card className="max-w-lg w-full text-center">
+          <CardHeader>
+            <CardTitle>No Questions Available</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-muted-foreground">
+              We couldn't load the questions for this test. Please go back and try selecting the test again.
+            </p>
+            <Button onClick={() => navigate('/student/tests')}>Back to Tests</Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const currentQuestionData = questions[currentQuestion];
 
   return (
     <div className="min-h-screen bg-gradient-hero p-4 relative">
@@ -446,17 +520,32 @@ const StudentTest = () => {
               </CardHeader>
               <CardContent className="space-y-6">
                 <div className="text-lg font-medium">
-                  {questions[currentQuestion].question}
+                  {currentQuestionData.question}
                 </div>
 
                 <RadioGroup 
-                  value={answers[currentQuestion]} 
-                  onValueChange={(value) => setAnswers({...answers, [currentQuestion]: value})}
+                  value={answers[currentQuestionData.id]?.toString() ?? ''} 
+                  onValueChange={(value) => {
+                    const selectedIndex = parseInt(value, 10);
+                    setAnswers(prev => ({
+                      ...prev,
+                      [currentQuestionData.id]: selectedIndex,
+                    }));
+                  }}
                 >
-                  {questions[currentQuestion].options.map((option, index) => (
-                    <div key={index} className="flex items-center space-x-3 p-4 rounded-lg border hover:bg-muted/50 cursor-pointer">
-                      <RadioGroupItem value={option} id={`q${currentQuestion}-${index}`} />
-                      <Label htmlFor={`q${currentQuestion}-${index}`} className="flex-1 cursor-pointer">
+                  {currentQuestionData.options.map((option, index) => (
+                    <div 
+                      key={index} 
+                      className="flex items-center space-x-3 p-4 rounded-lg border hover:bg-muted/50 cursor-pointer transition-colors"
+                      onClick={() => {
+                        setAnswers(prev => ({
+                          ...prev,
+                          [currentQuestionData.id]: index,
+                        }));
+                      }}
+                    >
+                      <RadioGroupItem value={index.toString()} id={`q${currentQuestionData.id}-${index}`} />
+                      <Label htmlFor={`q${currentQuestionData.id}-${index}`} className="flex-1 cursor-pointer">
                         {option}
                       </Label>
                     </div>
@@ -504,13 +593,17 @@ const StudentTest = () => {
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-5 gap-2">
-                  {questions.map((_, index) => (
+                  {questions.map((questionItem, index) => (
                     <Button
-                      key={index}
-                      variant={currentQuestion === index ? "default" : answers[index] ? "outline" : "ghost"}
+                      key={questionItem.id}
+                      variant={currentQuestion === index ? "default" : answers[questionItem.id] !== undefined ? "default" : "ghost"}
                       size="sm"
                       onClick={() => setCurrentQuestion(index)}
-                      className="w-full border-2 border-border aspect-square"
+                      className={`w-full border-2 aspect-square font-semibold transition-colors ${
+                        answers[questionItem.id] !== undefined && currentQuestion !== index 
+                          ? 'bg-green-500 hover:bg-green-600 text-white border-green-600' 
+                          : ''
+                      }`}
                       disabled={isSubmitting}
                     >
                       {index + 1}

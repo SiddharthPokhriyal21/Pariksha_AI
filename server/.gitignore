@@ -68,3 +68,6 @@ pids/
 *.db
 *.sqlite
 
+# Virtual environment
+venv/
+.venv/

@@ -1,74 +1,160 @@
-import { Canvas, loadImage } from 'canvas';
 import * as fs from 'fs';
 import * as path from 'path';
 import { promisify } from 'util';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+function resolvePythonBinary() {
+  const candidates: (string | undefined)[] = [
+    process.env.PROCTORING_PYTHON,
+    process.env.PYTHON_PATH,
+  ];
+
+  const venvNames = ['.venv', 'venv'];
+  const exeName = process.platform === 'win32' ? 'python.exe' : 'python';
+  const binDir = process.platform === 'win32' ? 'Scripts' : 'bin';
+
+  for (const name of venvNames) {
+    candidates.push(path.join(process.cwd(), name, binDir, exeName));
+    candidates.push(path.join(__dirname, '..', '..', name, binDir, exeName));
+  }
+
+  candidates.push('python3', 'python');
+
+  console.log('[ML] Python resolution candidates:', candidates.filter(c => c));
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    
+    // First check if file exists (for full paths)
+    if (fs.existsSync(candidate)) {
+      console.log(`[ML] ✓ Found Python binary: ${candidate}`);
+      return candidate;
+    }
+    
+    // Check if it's a command name (not a path)
+    if (!candidate.includes(path.sep)) {
+      console.log(`[ML] ✓ Using Python command: ${candidate}`);
+      return candidate;
+    }
+  }
+  
+  console.log('[ML] ⚠️  No Python binary found, falling back to "python"');
+  return 'python';
+}
+
+const PYTHON_BIN = resolvePythonBinary();
+const MODEL_SCRIPT = path.join(__dirname, '../ml/procturingModel.py');
+const TEMP_DIR = path.join(process.cwd(), 'temp');
+
+function ensureTempDir() {
+  if (!fs.existsSync(TEMP_DIR)) {
+    fs.mkdirSync(TEMP_DIR, { recursive: true });
+  }
+}
 
 /**
  * Process video chunk with ML model to detect cheating/suspicious behavior
- * 
- * This is a placeholder function. Replace the implementation with your actual ML model.
- * 
  * @param videoBuffer - Video chunk buffer (10 seconds)
- * @param frameImage - Base64 encoded frame image extracted from video
  * @returns Promise with detection results
  */
 export async function processVideoChunkWithML(
-  videoBuffer: Buffer,
-  frameImage: string
+  videoBuffer: Buffer
 ): Promise<{
   hasViolation: boolean;
   violationType?: string;
   severity?: 'low' | 'medium' | 'high';
   confidence?: number;
   description?: string;
+  details?: string;
 }> {
   try {
-    // TODO: Replace this with your actual ML model inference
-    // Example structure:
-    // 1. Load your ML model
-    // 2. Preprocess the video/frame
-    // 3. Run inference
-    // 4. Parse results
-    
-    // Placeholder implementation - replace with your model
-    const violations = [
-      { type: 'Multiple faces detected', severity: 'high' as const, confidence: 0.95 },
-      { type: 'Looking away from screen', severity: 'medium' as const, confidence: 0.75 },
-      { type: 'Phone detected', severity: 'high' as const, confidence: 0.88 },
-      { type: 'Unauthorized person detected', severity: 'high' as const, confidence: 0.92 },
-      { type: 'No face detected', severity: 'medium' as const, confidence: 0.80 },
+    ensureTempDir();
+    const chunkPath = path.join(TEMP_DIR, `chunk_${Date.now()}_${process.pid}.webm`);
+    fs.writeFileSync(chunkPath, videoBuffer);
+
+    // Verify the file was written
+    const fileStats = fs.statSync(chunkPath);
+    console.log(`[ML] Video chunk written: ${chunkPath} (${fileStats.size} bytes)`);
+
+    const args = [
+      MODEL_SCRIPT,
+      '--mode',
+      'analyze-video',
+      '--video',
+      chunkPath,
+      '--max-frames',
+      (process.env.PROCTORING_MAX_FRAMES || '8').toString(),
+      '--quiet'
+      // Removed --quiet to see debug output
     ];
 
-    // Simulate ML detection (replace with actual model inference)
-    // Randomly detect violations for demonstration
-    // In production, use your actual ML model here
-    const randomValue = Math.random();
-    
-    if (randomValue > 0.85) {
-      // 15% chance of detecting a violation (for demo)
-      const violation = violations[Math.floor(Math.random() * violations.length)];
+    console.log(`[ML] Processing video chunk (${videoBuffer.length} bytes)...`);
+    console.log(`[ML] Using Python: ${PYTHON_BIN}`);
+    console.log(`[ML] Script: ${MODEL_SCRIPT}`);
+
+    let stdout = '';
+    let stderr = '';
+    try {
+      const result = await execFileAsync(PYTHON_BIN, args, { maxBuffer: 10 * 1024 * 1024, timeout: 30000 });
+      stdout = result.stdout?.trim() || '';
+      stderr = result.stderr?.trim() || '';
+      console.log(`[ML] Python output: ${stdout}`);
+    } catch (error: any) {
+      stderr = error?.stderr?.toString() || error.message || '';
+      stdout = error?.stdout?.toString() || '';
+      console.error('[ML] Python execution error:', {
+        code: error.code,
+        signal: error.signal,
+        stderr,
+        stdout,
+      });
+    }
+
+    let parsed: any = null;
+    if (stdout) {
+      try {
+        const lines = stdout.split('\n').filter(Boolean);
+        const jsonLine = lines.pop() || '{}';
+        parsed = JSON.parse(jsonLine);
+        console.log(`[ML] Parsed result:`, parsed);
+      } catch (parseErr) {
+        console.error('[ML] Failed to parse python model output:', parseErr);
+        console.error('[ML] Stdout was:', stdout);
+      }
+    }
+
+    // Clean up temp file
+    try {
+      fs.unlinkSync(chunkPath);
+    } catch (e) {
+      // Ignore cleanup errors
+    }
+
+    if (parsed && typeof parsed === 'object') {
+      if (parsed.hasViolation) {
+        console.log(`[ML] ⚠ Violation detected: ${parsed.violationType} (${parsed.severity})`);
+      }
       return {
-        hasViolation: true,
-        violationType: violation.type,
-        severity: violation.severity,
-        confidence: violation.confidence,
-        description: `ML model detected: ${violation.type}`,
+        hasViolation: !!parsed.hasViolation,
+        violationType: parsed.violationType,
+        severity: parsed.severity,
+        description: parsed.details,
+        details: stderr || parsed.error,
       };
     }
 
-    // No violation detected
-    return {
-      hasViolation: false,
-    };
+    if (stderr) {
+      console.error('[ML] Python model stderr:', stderr);
+    }
+
+    console.log('[ML] No violation detected in chunk');
+    return { hasViolation: false };
   } catch (error: any) {
-    console.error('Error processing video chunk with ML:', error);
-    // Return no violation on error to avoid blocking the test
-    return {
-      hasViolation: false,
-    };
+    console.error('[ML] Error processing video chunk with ML:', error.message);
+    return { hasViolation: false };
   }
 }
 
@@ -80,16 +166,10 @@ export async function processVideoChunkWithML(
  */
 export async function extractFrameFromVideo(videoBuffer: Buffer): Promise<string> {
   try {
-    // Create temporary file for video chunk
-    const tempDir = path.join(process.cwd(), 'temp');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-    
-    const tempVideoPath = path.join(tempDir, `chunk_${Date.now()}.webm`);
-    const tempImagePath = path.join(tempDir, `frame_${Date.now()}.jpg`);
-    
-    // Write video buffer to temp file
+    ensureTempDir();
+    const tempVideoPath = path.join(TEMP_DIR, `chunk_${Date.now()}_${process.pid}.webm`);
+    const tempImagePath = path.join(TEMP_DIR, `frame_${Date.now()}_${process.pid}.jpg`);
+
     fs.writeFileSync(tempVideoPath, videoBuffer);
     
     try {

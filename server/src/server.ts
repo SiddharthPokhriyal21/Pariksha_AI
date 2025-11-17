@@ -3,16 +3,20 @@ import express, { Request, Response } from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
 import dotenv from 'dotenv';
+
+// Load environment variables from .env file FIRST, before importing other modules
+dotenv.config();
+
 import mongoose from 'mongoose';
 import User from './models/User';
 import Test from './models/Test';
-import TestRecording from './models/TestRecording';
 import Violation from './models/Violation';
+import Question from './models/Question';
+import ExamAttempt from './models/ExamAttempt';
+import ProctoringLog from './models/ProctoringLog';
 import { loadFaceModels, validateFace, compareFaces } from './utils/faceRecognition';
 import { processVideoChunkWithML, extractFrameFromVideo } from './utils/mlProctoring';
-
-// Load environment variables from .env file
-dotenv.config();
+import { getCheatingImagesBucket } from './utils/gridfs';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -49,11 +53,8 @@ interface StudentResult {
 
 const MOCK_DB = {
   users: [] as { id: number, fullName: string, email: string, password: string, role: 'student' | 'examiner', photo: string }[],
-  tests: [
-    { id: 1, name: "Mathematics Final Exam", questions: [], status: "scheduled", date: "2024-12-20", studentsEnrolled: 45 },
-    { id: 2, name: "Physics Midterm", questions: [], status: "completed", date: "2024-12-18", studentsEnrolled: 38 },
-    { id: 3, name: "Chemistry Quiz", questions: [], status: "scheduled", date: "2024-12-22", studentsEnrolled: 50 },
-  ] as Test[],
+  // tests are now fully sourced from MongoDB; this array is kept for backward-compatible types only
+  tests: [] as Test[],
   results: [
     { id: 1, name: "Alice Johnson", email: "alice@example.com", actualScore: 95, trustScore: 98, violationsCount: 0 },
     { id: 2, name: "Bob Smith", email: "bob@example.com", actualScore: 87, trustScore: 75, violationsCount: 3 },
@@ -349,30 +350,33 @@ app.post('/api/auth/:role/login', async (req: Request, res: Response) => {
 //         EXAMINER ROUTES
 // ===============================
 
-// Fetches data for ExaminerDashboard.tsx
+// Fetches data for ExaminerDashboard.tsx (now fully backed by MongoDB, no hardcoded tests)
 app.get('/api/examiner/dashboard', async (req: Request, res: Response) => {
   try {
-    const totalTests = MOCK_DB.tests.length;
-    const completedTests = MOCK_DB.tests.filter(t => t.status === 'completed').length;
-    const scheduledTests = totalTests - completedTests;
-    // Count students from MongoDB
-    const studentCount = await User.countDocuments({ role: 'student' });
-    const activeStudents = studentCount + MOCK_DB.results.length;
+    const [totalTests, completedTests, scheduledTests, studentCount, recentTests] = await Promise.all([
+      Test.countDocuments({}),
+      Test.countDocuments({ status: 'completed' }),
+      Test.countDocuments({ status: { $in: ['scheduled', 'active', 'running'] } }),
+      User.countDocuments({ role: 'student' }),
+      Test.find({}).sort({ createdAt: -1 }).limit(10),
+    ]);
+
+    const activeStudents = studentCount;
 
     const dashboardData = {
       stats: [
-        { label: "Total Tests", value: totalTests.toString(), color: "primary" },
-        { label: "Active Students", value: activeStudents.toString(), color: "secondary" },
-        { label: "Completed", value: completedTests.toString(), color: "success" },
-        { label: "Scheduled", value: scheduledTests.toString(), color: "warning" },
+        { label: 'Total Tests', value: totalTests.toString(), color: 'primary' },
+        { label: 'Active Students', value: activeStudents.toString(), color: 'secondary' },
+        { label: 'Completed', value: completedTests.toString(), color: 'success' },
+        { label: 'Scheduled', value: scheduledTests.toString(), color: 'warning' },
       ],
-      tests: MOCK_DB.tests.map(t => ({ 
-        id: t.id, 
-        name: t.name, 
-        date: t.date, 
-        students: t.studentsEnrolled, 
-        status: t.status 
-      })).reverse(),
+      tests: recentTests.map((t) => ({
+        id: (t._id as any).toString(),
+        name: t.name,
+        date: t.startTime ? t.startTime.toISOString().split('T')[0] : '',
+        students: t.allowedStudents?.length || 0,
+        status: t.status,
+      })),
     };
 
     res.status(200).json(dashboardData);
@@ -387,72 +391,91 @@ app.post('/api/examiner/tests', async (req: Request, res: Response) => {
   try {
     // Check MongoDB connection
     if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ 
+      return res.status(503).json({
         message: 'Database connection not available. Please try again later.',
-        error: 'DATABASE_UNAVAILABLE'
+        error: 'DATABASE_UNAVAILABLE',
       });
     }
 
-    const { testName, description, questions, scheduledDate, duration, enrolledStudents, examinerId } = req.body;
-    
+    const { testName, description, questions, duration, allowedStudents, examinerId, startTime, endTime } = req.body;
+
     if (!testName || !questions || !Array.isArray(questions) || questions.length === 0) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: 'Test name and questions are required.',
-        error: 'MISSING_FIELDS'
+        error: 'MISSING_FIELDS',
       });
     }
 
     // Get examiner ID from request (you may need to add authentication middleware)
     const examiner = examinerId || 'unknown'; // TODO: Get from auth token
 
+    // Persist reusable questions in dedicated collection and collect their IDs
+    const createdQuestions = await Promise.all(
+      questions.map((q: any) =>
+        new Question({
+          type: q.type || 'mcq',
+          questionText: q.question,
+          options: q.type === 'mcq' ? q.options : [],
+          correctAnswer: q.type === 'mcq' ? q.correctAnswer : q.correctAnswer ?? null,
+          marks: typeof q.marks === 'number' ? q.marks : 1,
+          sampleInput: q.sampleInput,
+          sampleOutput: q.sampleOutput,
+          constraints: q.constraints,
+          codingStarterCode: q.codingStarterCode,
+          codingFunctionSignature: q.codingFunctionSignature,
+          codingTestCases: q.codingTestCases,
+          subjectiveRubric: q.subjectiveRubric,
+          referenceAnswer: q.referenceAnswer,
+          createdBy: examiner,
+        }).save()
+      )
+    );
+
+    const questionIds = createdQuestions.map((q) => q._id);
+
+    const start = startTime
+      ? new Date(startTime)
+      : new Date();
+    const end = endTime
+      ? new Date(endTime)
+      : new Date(start.getTime() + (duration || 60) * 60 * 1000);
+
     // Create test in MongoDB
     const newTest = new Test({
       name: testName,
       description: description || '',
       examinerId: examiner,
-      questions: questions.map((q: any, index: number) => ({
-        id: index + 1,
-        question: q.question,
-        options: q.options,
-        correctAnswer: q.correctAnswer
-      })),
       status: 'scheduled',
-      scheduledDate: scheduledDate ? new Date(scheduledDate) : new Date(),
       duration: duration || 60, // Default 60 minutes
-      enrolledStudents: enrolledStudents || [] // Array of student IDs
+      createdBy: examiner,
+      questionIds,
+      allowedStudents: Array.isArray(allowedStudents)
+        ? allowedStudents.map((email: string) => email.toLowerCase().trim()).filter(Boolean)
+        : [],
+      startTime: start,
+      endTime: end,
     });
 
     await newTest.save();
 
-    // Also add to MOCK_DB for backward compatibility (if needed)
-    const mockTest: Test = {
-      id: getNextId(MOCK_DB.tests),
-      name: testName,
-      questions: questions,
-      status: 'scheduled',
-      date: new Date().toISOString().split('T')[0], // Today's date
-      studentsEnrolled: enrolledStudents?.length || 0,
-    };
-    MOCK_DB.tests.push(mockTest);
-
-    res.status(201).json({ 
-      message: 'Test created successfully', 
+    res.status(201).json({
+      message: 'Test created successfully',
       testId: (newTest._id as any).toString(),
-      mongoTestId: (newTest._id as any).toString()
+      mongoTestId: (newTest._id as any).toString(),
     });
   } catch (error: any) {
     console.error('Create test error:', error);
-    
+
     if (error.name === 'ValidationError') {
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: 'Validation failed',
-        error: 'VALIDATION_ERROR'
+        error: 'VALIDATION_ERROR',
       });
     }
-    
-    res.status(500).json({ 
+
+    res.status(500).json({
       message: 'Failed to create test. Please try again.',
-      error: 'INTERNAL_ERROR'
+      error: 'INTERNAL_ERROR',
     });
   }
 });
@@ -652,30 +675,70 @@ app.get('/api/student/tests', async (req: Request, res: Response) => {
       });
     }
 
-    const { studentId } = req.query;
+    let { studentId, email } = req.query as { studentId?: string; email?: string };
 
-    if (!studentId) {
+    if (!studentId && !email) {
       return res.status(400).json({ 
-        message: 'Student ID is required',
-        error: 'MISSING_STUDENT_ID'
+        message: 'Student ID or email is required',
+        error: 'MISSING_STUDENT_IDENTIFIER'
       });
     }
 
-    // Find tests where student is enrolled and status is scheduled or active
-    const tests = await Test.find({
-      enrolledStudents: studentId,
-      status: { $in: ['scheduled', 'active'] }
-    }).sort({ scheduledDate: 1 });
+    // If we have studentId but no email, try to find the user to pull their email
+    if (studentId && !email) {
+      const user = await User.findById(studentId);
+      if (user?.email) {
+        email = user.email;
+      }
+    }
+
+    const normalizedEmail = email?.toLowerCase().trim();
+
+    // Build query: tests where student is allowed via email/ID or tests open to everyone
+    const statusFilter = { $in: ['scheduled', 'active', 'running'] as const };
+    const query: any = { status: statusFilter };
+    const accessConditions: any[] = [];
+    if (studentId) {
+      accessConditions.push({ allowedStudents: studentId });
+    }
+    if (normalizedEmail) {
+      accessConditions.push({ allowedStudents: normalizedEmail });
+    }
+    // include open tests (no restrictions)
+    accessConditions.push({ allowedStudents: { $exists: false } });
+    accessConditions.push({ allowedStudents: { $size: 0 } });
+
+    query.$or = accessConditions;
+
+    const tests = await Test.find(query).sort({ startTime: 1 });
+    const now = new Date();
+    const attempts = await ExamAttempt.find({
+      testId: { $in: tests.map((t) => t._id) },
+      studentId,
+      status: 'submitted',
+    }).select('testId status');
+
+    const attemptStatusMap = new Map<string, string>();
+    attempts.forEach((attempt) => {
+      attemptStatusMap.set((attempt.testId as any).toString(), attempt.status);
+    });
 
     res.status(200).json({
       tests: tests.map(test => ({
         id: (test._id as any).toString(),
         name: test.name,
         description: test.description,
-        scheduledDate: test.scheduledDate,
         duration: test.duration,
-        status: test.status,
-        questionCount: test.questions.length
+        status: attemptStatusMap.get((test._id as any).toString()) === 'submitted'
+          ? 'submitted'
+          : now < test.startTime
+            ? 'scheduled'
+            : now > test.endTime
+              ? 'completed'
+              : 'active',
+        questionCount: test.questionIds?.length || 0,
+        startTime: test.startTime,
+        endTime: test.endTime,
       }))
     });
   } catch (error: any) {
@@ -699,18 +762,35 @@ app.get('/api/student/test/:testId', async (req: Request, res: Response) => {
     }
 
     const { testId } = req.params;
-    const { studentId } = req.query;
+    let { studentId, email } = req.query as { studentId?: string; email?: string };
 
-    if (!studentId) {
+    if (!studentId && !email) {
       return res.status(400).json({ 
-        message: 'Student ID is required',
-        error: 'MISSING_STUDENT_ID'
+        message: 'Student ID or email is required',
+        error: 'MISSING_STUDENT_IDENTIFIER'
       });
     }
 
+    if (studentId && !email) {
+      const user = await User.findById(studentId);
+      if (user?.email) {
+        email = user.email;
+      }
+    }
+    
+    const orConditions: any[] = [];
+    if (studentId) {
+      orConditions.push({ allowedStudents: studentId });
+    }
+    if (email) {
+      orConditions.push({ allowedStudents: email.toLowerCase().trim() });
+    }
+    orConditions.push({ allowedStudents: { $exists: false } });
+    orConditions.push({ allowedStudents: { $size: 0 } });
+
     const test = await Test.findOne({
       _id: testId,
-      enrolledStudents: studentId
+      ...(orConditions.length > 0 ? { $or: orConditions } : {}),
     });
 
     if (!test) {
@@ -720,20 +800,80 @@ app.get('/api/student/test/:testId', async (req: Request, res: Response) => {
       });
     }
 
+    const now = new Date();
+    if (now < test.startTime) {
+      return res.status(403).json({
+        message: 'This test is not yet available.',
+        error: 'TEST_NOT_STARTED',
+      });
+    }
+
+    if (now > test.endTime) {
+      return res.status(403).json({
+        message: 'This test is no longer active.',
+        error: 'TEST_ENDED',
+      });
+    }
+
+    if (studentId) {
+      const existingAttempt = await ExamAttempt.findOne({
+        testId,
+        studentId,
+        status: 'submitted',
+      });
+      if (existingAttempt) {
+        return res.status(403).json({
+          message: 'You have already submitted this test.',
+          error: 'TEST_ALREADY_SUBMITTED',
+        });
+      }
+    }
+
+    const questionIds = test.questionIds || [];
+    if (!questionIds.length) {
+      return res.status(400).json({
+        message: 'No questions configured for this test.',
+        error: 'QUESTIONS_MISSING',
+      });
+    }
+
+    const questionDocs = await Question.find({ _id: { $in: questionIds } });
+    const questionMap = new Map(
+      questionDocs.map((doc) => [(doc._id as any).toString(), doc])
+    );
+
+    const orderedQuestions = questionIds
+      .map((id, index) => {
+        const doc = questionMap.get((id as any).toString());
+        if (!doc) return null;
+        return {
+          id: index + 1,
+          questionId: (doc._id as any).toString(),
+          type: doc.type,
+          question: doc.questionText,
+          options: doc.type === 'mcq' ? doc.options : [],
+          marks: doc.marks || 1,
+          sampleInput: doc.sampleInput,
+          sampleOutput: doc.sampleOutput,
+          constraints: doc.constraints,
+          codingStarterCode: doc.codingStarterCode,
+          codingFunctionSignature: doc.codingFunctionSignature,
+          codingTestCases: doc.codingTestCases,
+          subjectiveRubric: doc.subjectiveRubric,
+        };
+      })
+      .filter(Boolean);
+
     // Return test without correct answers
     res.status(200).json({
       id: (test._id as any).toString(),
       name: test.name,
       description: test.description,
-      scheduledDate: test.scheduledDate,
       duration: test.duration,
       status: test.status,
-      questions: test.questions.map(q => ({
-        id: q.id,
-        question: q.question,
-        options: q.options
-        // Don't send correctAnswer to student
-      }))
+      startTime: test.startTime,
+      endTime: test.endTime,
+      questions: orderedQuestions,
     });
   } catch (error: any) {
     console.error('Get test error:', error);
@@ -744,77 +884,153 @@ app.get('/api/student/test/:testId', async (req: Request, res: Response) => {
   }
 });
 
+// Helper to normalize ML violation type to ProctoringLog label
+function mapViolationTypeToLabel(type: string): 'Phone Detected' | 'Multiple Faces' | 'No Person Visible' | 'Audio Detected' | 'Looking Away' {
+  const lower = type.toLowerCase();
+  if (lower.includes('phone')) return 'Phone Detected';
+  if (lower.includes('device')) return 'Phone Detected';
+  if (lower.includes('multiple') && lower.includes('face')) return 'Multiple Faces';
+  if (lower.includes('no face') || lower.includes('no person')) return 'No Person Visible';
+  if (lower.includes('audio')) return 'Audio Detected';
+  return 'Looking Away';
+}
+
 // Endpoint to receive 10-second video chunks for real-time proctoring
 app.post('/api/student/proctor-chunk', async (req: Request, res: Response) => {
   try {
     // Check MongoDB connection
     if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ 
+      return res.status(503).json({
         message: 'Database connection not available. Please try again later.',
-        error: 'DATABASE_UNAVAILABLE'
+        error: 'DATABASE_UNAVAILABLE',
       });
     }
 
     const { studentId, testId, videoChunk, timestamp } = req.body;
-    
+
     // Validate required fields
     if (!studentId || !testId || !videoChunk) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: 'Missing required fields: studentId, testId, videoChunk',
-        error: 'MISSING_FIELDS'
+        error: 'MISSING_FIELDS',
       });
     }
 
     // Convert base64 video chunk to buffer
-    const videoBase64Data = videoChunk.includes(',') 
-      ? videoChunk.split(',')[1] 
+    const videoBase64Data = videoChunk.includes(',')
+      ? videoChunk.split(',')[1]
       : videoChunk.replace(/^data:video\/\w+;base64,/, '');
-    
+
     const videoBuffer = Buffer.from(videoBase64Data, 'base64');
+
+    console.log(`[PROCTOR] Processing chunk from student ${studentId} for test ${testId}`);
 
     // Extract frame from video for ML processing
     const frameImage = await extractFrameFromVideo(videoBuffer);
 
     // Process video chunk with ML model
-    const mlResult = await processVideoChunkWithML(videoBuffer, frameImage);
+    const mlResult = await processVideoChunkWithML(videoBuffer);
 
-    // If violation detected, log it to database
+    // If violation detected, log it to database using new ProctoringLog + ExamAttempt + GridFS
     if (mlResult.hasViolation && mlResult.violationType) {
-      const violation = new Violation({
-        studentId,
-        testId,
-        timestamp: timestamp ? new Date(timestamp) : new Date(),
-        type: mlResult.violationType,
-        severity: mlResult.severity || 'medium',
-        image: frameImage, // Store the frame image with the violation
-        confidence: mlResult.confidence,
-        description: mlResult.description,
+      console.log(`[PROCTOR] Violation detected: ${mlResult.violationType} (${mlResult.severity})`);
+      
+      // Ensure an exam attempt exists for this student & test
+      let attempt = await ExamAttempt.findOne({ testId, studentId });
+      if (!attempt) {
+        attempt = new ExamAttempt({
+          testId,
+          studentId,
+          status: 'in-progress',
+          startedAt: timestamp ? new Date(timestamp) : new Date(),
+          totalScore: 0,
+          trustScore: 100,
+          totalViolations: 0,
+          questionsAttempted: 0,
+          answers: [],
+        });
+        await attempt.save();
+        console.log(`[PROCTOR] Created new exam attempt for student ${studentId}`);
+      }
+
+      const logTimestamp = timestamp ? new Date(timestamp) : new Date();
+
+      // Save frame as GridFS file if available
+      let imageId: mongoose.Types.ObjectId | undefined;
+      try {
+        if (frameImage) {
+          const bucket = getCheatingImagesBucket();
+          const base64Data = frameImage.includes(',')
+            ? frameImage.split(',')[1]
+            : frameImage.replace(/^data:image\/\w+;base64,/, '');
+          const imageBuffer = Buffer.from(base64Data, 'base64');
+
+          await new Promise<void>((resolve, reject) => {
+            const uploadStream = bucket.openUploadStream(`violation_${Date.now()}.jpg`, {
+              metadata: {
+                attemptId: attempt!._id,
+                timestamp: logTimestamp,
+                label: mlResult.violationType,
+                severity: mlResult.severity || 'medium',
+              },
+            });
+            uploadStream.on('error', reject);
+            uploadStream.on('finish', () => {
+              imageId = uploadStream.id as mongoose.Types.ObjectId;
+              resolve();
+            });
+            uploadStream.end(imageBuffer);
+          });
+          console.log(`[PROCTOR] Saved violation image to GridFS`);
+        }
+      } catch (gridfsError) {
+        console.error('[PROCTOR] Error saving proctoring image to GridFS:', gridfsError);
+      }
+
+      const label = mapViolationTypeToLabel(mlResult.violationType);
+      const severity = mlResult.severity || 'medium';
+
+      // Create proctoring log document
+      const log = new ProctoringLog({
+        attemptId: attempt._id,
+        timestamp: logTimestamp,
+        label,
+        severity,
+        imageId,
       });
 
-      await violation.save();
-      
-      console.log(`⚠ Violation detected for student ${studentId}: ${mlResult.violationType} (${mlResult.severity})`);
-      
+      await log.save();
+      console.log(`[PROCTOR] ✓ Logged violation: ${label} (${severity})`);
+
+      // Update trust score and violation count on the attempt
+      const penalty = severity === 'high' ? 10 : severity === 'medium' ? 5 : 2;
+      attempt.totalViolations += 1;
+      attempt.trustScore = Math.max(0, attempt.trustScore - penalty);
+      await attempt.save();
+
+      console.log(`⚠ Violation detected for student ${studentId}: ${mlResult.violationType} (${severity})`);
+
       // Return violation info (but don't block the test)
-      res.status(200).json({ 
+      res.status(200).json({
         message: 'Chunk processed successfully',
         violationDetected: true,
         violationType: mlResult.violationType,
-        severity: mlResult.severity,
+        severity,
       });
     } else {
       // No violation, chunk processed and discarded
-      res.status(200).json({ 
+      console.log(`[PROCTOR] No violation in chunk from student ${studentId}`);
+      res.status(200).json({
         message: 'Chunk processed successfully',
         violationDetected: false,
       });
     }
   } catch (error: any) {
-    console.error('Error processing proctor chunk:', error);
-    
+    console.error('[PROCTOR] Error processing proctor chunk:', error.message);
+
     // Don't fail the request - just log the error
     // The test should continue even if chunk processing fails
-    res.status(200).json({ 
+    res.status(200).json({
       message: 'Chunk received (processing error logged)',
       violationDetected: false,
     });
@@ -823,83 +1039,193 @@ app.post('/api/student/proctor-chunk', async (req: Request, res: Response) => {
 
 // Used by StudentTest.tsx to submit answers and save recording
 app.post('/api/student/submit-test', async (req: Request, res: Response) => {
-    try {
-        // Check MongoDB connection
-        if (mongoose.connection.readyState !== 1) {
-            return res.status(503).json({ 
-                message: 'Database connection not available. Please try again later.',
-                error: 'DATABASE_UNAVAILABLE'
-            });
-        }
-
-        const { studentId, testId, answers, videoBlob, audioBlob, startTime, endTime, violations } = req.body;
-        
-        // Validate required fields
-        if (!studentId || !testId || !videoBlob || !audioBlob || !startTime || !endTime) {
-            return res.status(400).json({ 
-                message: 'Missing required fields: studentId, testId, videoBlob, audioBlob, startTime, endTime',
-                error: 'MISSING_FIELDS'
-            });
-        }
-
-        // Calculate duration
-        const duration = Math.floor((new Date(endTime).getTime() - new Date(startTime).getTime()) / 1000);
-
-        // Convert base64 blobs to buffers (handle data URL format)
-        const videoBase64Data = videoBlob.includes(',') 
-          ? videoBlob.split(',')[1] 
-          : videoBlob.replace(/^data:video\/\w+;base64,/, '');
-        const audioBase64Data = audioBlob.includes(',') 
-          ? audioBlob.split(',')[1] 
-          : audioBlob.replace(/^data:audio\/\w+;base64,/, '');
-        
-        const videoBuffer = Buffer.from(videoBase64Data, 'base64');
-        const audioBuffer = Buffer.from(audioBase64Data, 'base64');
-
-        // Create test recording document
-        const recording = new TestRecording({
-            studentId,
-            testId,
-            videoBlob: videoBuffer,
-            audioBlob: audioBuffer,
-            videoMimeType: 'video/webm',
-            audioMimeType: 'audio/webm',
-            duration,
-            startTime: new Date(startTime),
-            endTime: new Date(endTime),
-            answers: answers || {},
-            violations: violations || [],
-        });
-
-        await recording.save();
-
-        // Calculate mock scores (in production, calculate based on answers)
-        const actualScore = Math.floor(Math.random() * 100);
-        const violationCount = violations?.length || 0;
-        const trustScore = Math.max(0, 100 - (violationCount * 5));
-
-        res.status(200).json({ 
-            message: 'Test submitted successfully.', 
-            recordingId: (recording._id as any).toString(),
-            actualScore,
-            trustScore,
-            violationCount
-        });
-    } catch (error: any) {
-        console.error('Test submission error:', error);
-        
-        if (error.name === 'ValidationError') {
-            return res.status(400).json({ 
-                message: 'Validation failed',
-                error: 'VALIDATION_ERROR'
-            });
-        }
-        
-        res.status(500).json({ 
-            message: 'Failed to submit test. Please try again.',
-            error: 'INTERNAL_ERROR'
-        });
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({
+        message: 'Database connection not available. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE',
+      });
     }
+
+    const { studentId, testId, answers, startTime, endTime, violations } = req.body;
+
+    if (!studentId || !testId || !startTime || !endTime) {
+      return res.status(400).json({
+        message: 'Missing required fields: studentId, testId, startTime, endTime',
+        error: 'MISSING_FIELDS',
+      });
+    }
+
+    const existingSubmission = await ExamAttempt.findOne({
+      testId,
+      studentId,
+      status: 'submitted',
+    });
+
+    if (existingSubmission) {
+      return res.status(409).json({
+        message: 'You have already submitted this test.',
+        error: 'TEST_ALREADY_SUBMITTED',
+      });
+    }
+
+    const duration = Math.floor(
+      (new Date(endTime).getTime() - new Date(startTime).getTime()) / 1000
+    );
+
+    // Fetch test to evaluate answers against embedded questions
+    const test = await Test.findById(testId);
+
+    let actualScore = 0;
+    let questionsAttempted = 0;
+    const examAnswers: {
+      questionId: mongoose.Types.ObjectId;
+      answer: any;
+      isCorrect: boolean;
+      marksObtained: number;
+    }[] = [];
+
+    let evaluationQuestions: {
+      index: number;
+      questionId?: mongoose.Types.ObjectId;
+      type?: string;
+      correctAnswer?: number;
+      marks?: number;
+    }[] = [];
+
+    if (test?.questionIds?.length) {
+      // Only fetch necessary fields for evaluation (optimization: select specific fields)
+      const questionDocs = await Question.find(
+        { _id: { $in: test.questionIds } },
+        { type: 1, correctAnswer: 1, marks: 1 }
+      ).lean(); // Use lean() for read-only data (faster queries)
+      
+      const questionMap = new Map(
+        questionDocs.map((doc) => [(doc._id as any).toString(), doc])
+      );
+      evaluationQuestions = test.questionIds
+        .map((id, index) => {
+          const doc = questionMap.get((id as any).toString());
+          if (!doc) return null;
+          return {
+            index: index + 1,
+            questionId: id as mongoose.Types.ObjectId,
+            type: doc.type,
+            correctAnswer:
+              doc.type === 'mcq' && typeof doc.correctAnswer === 'number'
+                ? doc.correctAnswer
+                : undefined,
+            marks: doc.marks || 1,
+          };
+        })
+        .filter(Boolean) as any[];
+    }
+
+    for (const q of evaluationQuestions) {
+      const givenAnswer = answers ? (answers as any)[q.index] : undefined;
+      if (givenAnswer !== undefined && givenAnswer !== null) {
+        questionsAttempted += 1;
+        let isCorrect = false;
+        let marksAwarded = 0;
+
+        if (q.type === 'mcq' && typeof q.correctAnswer === 'number') {
+          isCorrect = givenAnswer === q.correctAnswer;
+          marksAwarded = isCorrect ? (q.marks || 1) : 0;
+        }
+
+        actualScore += marksAwarded;
+
+        if (q.questionId) {
+          examAnswers.push({
+            questionId: q.questionId,
+            answer: givenAnswer,
+            isCorrect,
+            marksObtained: marksAwarded,
+          });
+        }
+      }
+    }
+
+    // Ensure ExamAttempt exists and update it
+    let attempt = await ExamAttempt.findOne({ testId, studentId });
+    if (!attempt) {
+      attempt = new ExamAttempt({
+        testId,
+        studentId,
+        status: 'submitted',
+        startedAt: new Date(startTime),
+        endedAt: new Date(endTime),
+        duration,
+        answers: examAnswers,
+        totalScore: actualScore,
+        trustScore: 100,
+        totalViolations: violations?.length || 0,
+        questionsAttempted,
+      });
+    } else {
+      attempt.status = 'submitted';
+      attempt.endedAt = new Date(endTime);
+      attempt.duration = duration;
+      attempt.answers = examAnswers;
+      attempt.totalScore = actualScore;
+      attempt.questionsAttempted = questionsAttempted;
+      // Keep trustScore as is if it was already reduced by proctoring; otherwise compute simple heuristic
+      if (attempt.trustScore === undefined || attempt.trustScore === null) {
+        const violationCount = violations?.length || attempt.totalViolations || 0;
+        attempt.trustScore = Math.max(0, 100 - violationCount * 5);
+      }
+    }
+
+    const violationCount = violations?.length || attempt.totalViolations || 0;
+    if (!attempt.totalViolations) {
+      attempt.totalViolations = violationCount;
+    }
+
+    await attempt.save();
+
+    // Log all violations received during submission to ProctoringLog
+    if (violations && Array.isArray(violations) && violations.length > 0) {
+      try {
+        for (const violation of violations) {
+          const label = mapViolationTypeToLabel(violation.type || '');
+          const log = new ProctoringLog({
+            attemptId: attempt._id,
+            timestamp: violation.timestamp ? new Date(violation.timestamp) : new Date(),
+            label,
+            severity: violation.severity || 'medium',
+          });
+          await log.save();
+        }
+        console.log(`✓ Logged ${violations.length} violations for student ${studentId} on test ${testId}`);
+      } catch (logError) {
+        console.error('Error logging violations during submission:', logError);
+        // Don't fail the submission due to logging errors
+      }
+    }
+
+    const trustScore = attempt.trustScore;
+
+    res.status(200).json({
+      message: 'Test submitted successfully.',
+      actualScore,
+      trustScore,
+      violationCount,
+    });
+  } catch (error: any) {
+    console.error('Test submission error:', error);
+
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        message: 'Validation failed',
+        error: 'VALIDATION_ERROR',
+      });
+    }
+
+    res.status(500).json({
+      message: 'Failed to submit test. Please try again.',
+      error: 'INTERNAL_ERROR',
+    });
+  }
 });
 
 

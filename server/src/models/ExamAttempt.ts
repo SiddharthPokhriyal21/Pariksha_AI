@@ -1,0 +1,98 @@
+import mongoose, { Document, Schema } from 'mongoose';
+
+export type ExamAttemptStatus = 'not-started' | 'in-progress' | 'submitted';
+
+export interface IAnswer {
+  questionId: mongoose.Types.ObjectId;
+  answer: any;
+  isCorrect?: boolean;
+  marksObtained?: number;
+}
+
+export interface IExamAttempt extends Document {
+  testId: mongoose.Types.ObjectId;
+  studentId: mongoose.Types.ObjectId;
+  status: ExamAttemptStatus;
+  startedAt?: Date;
+  endedAt?: Date;
+  duration?: number;
+  answers: IAnswer[];
+  totalScore: number;
+  trustScore: number;
+  totalViolations: number;
+  questionsAttempted: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const ExamAttemptSchema = new Schema<IExamAttempt>(
+  {
+    testId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Test',
+      required: true,
+    },
+    studentId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    status: {
+      type: String,
+      enum: ['not-started', 'in-progress', 'submitted'],
+      default: 'in-progress',
+    },
+    startedAt: {
+      type: Date,
+    },
+    endedAt: {
+      type: Date,
+    },
+    duration: {
+      type: Number,
+    },
+    answers: [
+      {
+        questionId: {
+          type: Schema.Types.ObjectId,
+          ref: 'Question',
+        },
+        answer: Schema.Types.Mixed,
+        isCorrect: {
+          type: Boolean,
+        },
+        marksObtained: {
+          type: Number,
+        },
+      },
+    ],
+    totalScore: {
+      type: Number,
+      default: 0,
+    },
+    trustScore: {
+      type: Number,
+      default: 100,
+    },
+    totalViolations: {
+      type: Number,
+      default: 0,
+    },
+    questionsAttempted: {
+      type: Number,
+      default: 0,
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+// ensure one attempt per student per test
+ExamAttemptSchema.index({ testId: 1, studentId: 1 }, { unique: true });
+
+const ExamAttempt = mongoose.model<IExamAttempt>('ExamAttempt', ExamAttemptSchema);
+
+export default ExamAttempt;
+
+

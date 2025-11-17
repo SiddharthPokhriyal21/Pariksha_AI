@@ -1,21 +1,22 @@
 import mongoose, { Document, Schema } from 'mongoose';
 
-export interface IQuestion {
-  id: number;
-  question: string;
-  options: string[];
-  correctAnswer: number;
-}
+export type TestStatus = 'scheduled' | 'active' | 'completed' | 'running';
 
 export interface ITest extends Document {
+  // Existing fields used by current APIs
   name: string;
   description?: string;
   examinerId: string;
-  questions: IQuestion[];
-  status: 'scheduled' | 'active' | 'completed';
-  scheduledDate: Date;
+  status: TestStatus;
   duration: number; // Duration in minutes
-  enrolledStudents: string[]; // Array of student IDs
+
+  // New fields to align with normalized exam schema
+  createdBy?: mongoose.Types.ObjectId;
+  allowedStudents?: string[]; // allowed emails
+  questionIds?: mongoose.Types.ObjectId[]; // reusable Question references
+  startTime: Date;
+  endTime: Date;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -36,43 +37,38 @@ const TestSchema = new Schema<ITest>(
       required: [true, 'Examiner ID is required'],
       index: true,
     },
-    questions: [
-      {
-        id: {
-          type: Number,
-          required: true,
-        },
-        question: {
-          type: String,
-          required: true,
-        },
-        options: {
-          type: [String],
-          required: true,
-        },
-        correctAnswer: {
-          type: Number,
-          required: true,
-        },
-      },
-    ],
     status: {
       type: String,
-      enum: ['scheduled', 'active', 'completed'],
+      enum: ['scheduled', 'active', 'completed', 'running'],
       default: 'scheduled',
-    },
-    scheduledDate: {
-      type: Date,
-      required: [true, 'Scheduled date is required'],
     },
     duration: {
       type: Number,
       required: [true, 'Duration is required'],
       min: [1, 'Duration must be at least 1 minute'],
     },
-    enrolledStudents: {
-      type: [String],
-      default: [],
+    createdBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+    },
+    allowedStudents: [
+      {
+        type: String,
+      },
+    ],
+    questionIds: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: 'Question',
+      },
+    ],
+    startTime: {
+      type: Date,
+      required: [true, 'Start time is required'],
+    },
+    endTime: {
+      type: Date,
+      required: [true, 'End time is required'],
     },
   },
   {
@@ -82,9 +78,12 @@ const TestSchema = new Schema<ITest>(
 
 // Create indexes for faster queries
 TestSchema.index({ examinerId: 1, status: 1 });
-TestSchema.index({ enrolledStudents: 1, status: 1 });
+// New index for allowedStudents lookups (email based access)
+TestSchema.index({ allowedStudents: 1 });
+TestSchema.index({ startTime: 1, endTime: 1 });
 
 const Test = mongoose.model<ITest>('Test', TestSchema);
 
 export default Test;
+
 

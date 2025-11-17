@@ -11,10 +11,11 @@ interface Test {
   id: string;
   name: string;
   description?: string;
-  scheduledDate: string;
   duration: number;
   status: string;
   questionCount: number;
+  startTime: string;
+  endTime: string;
 }
 
 const StudentTestList = () => {
@@ -26,11 +27,12 @@ const StudentTestList = () => {
   useEffect(() => {
     const fetchTests = async () => {
       const studentId = localStorage.getItem('studentId');
+      const studentEmail = localStorage.getItem('studentEmail');
       
-      if (!studentId) {
+      if (!studentId && !studentEmail) {
         toast({
           title: "Error",
-          description: "Student ID not found. Please login again.",
+          description: "Student details not found. Please login again.",
           variant: "destructive",
         });
         navigate('/student/login');
@@ -38,7 +40,15 @@ const StudentTestList = () => {
       }
 
       try {
-        const response = await fetch(getApiUrl(`/api/student/tests?studentId=${studentId}`));
+        const queryParams = new URLSearchParams();
+        if (studentId) {
+          queryParams.append('studentId', studentId);
+        }
+        if (studentEmail) {
+          queryParams.append('email', studentEmail);
+        }
+
+        const response = await fetch(getApiUrl(`/api/student/tests?${queryParams.toString()}`));
         
         if (response.ok) {
           const data = await response.json();
@@ -65,8 +75,29 @@ const StudentTestList = () => {
     fetchTests();
   }, [navigate, toast]);
 
-  const handleStartTest = (testId: string) => {
-    localStorage.setItem('testId', testId);
+  const handleStartTest = (test: Test) => {
+    const now = new Date();
+    const start = new Date(test.startTime);
+    const end = new Date(test.endTime);
+
+    if (now < start || now > end) {
+      toast({
+        title: "Test Unavailable",
+        description: "This test is only active during its scheduled window.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (test.status === 'submitted') {
+      toast({
+        title: "Already Submitted",
+        description: "You have already submitted this test.",
+      });
+      return;
+    }
+
+    localStorage.setItem('testId', test.id);
     navigate('/student/rules');
   };
 
@@ -116,7 +147,14 @@ const StudentTestList = () => {
           </Card>
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {tests.map((test) => (
+            {tests.map((test) => {
+              const now = new Date();
+              const start = new Date(test.startTime);
+              const end = new Date(test.endTime);
+              const isActive = now >= start && now <= end;
+              const isSubmitted = test.status === 'submitted';
+
+              return (
               <Card key={test.id} className="hover:shadow-lg transition-shadow">
                 <CardHeader>
                   <div className="flex items-start justify-between mb-2">
@@ -137,20 +175,25 @@ const StudentTestList = () => {
                     <span>{test.duration} minutes</span>
                   </div>
                   <div className="text-sm text-muted-foreground">
-                    <strong>Scheduled:</strong> {formatDate(test.scheduledDate)}
+                    <strong>Opens:</strong> {formatDate(test.startTime)}
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    <strong>Closes:</strong> {formatDate(test.endTime)}
                   </div>
                   <div className="text-sm text-muted-foreground">
                     <strong>Questions:</strong> {test.questionCount}
                   </div>
                   <Button 
                     className="w-full" 
-                    onClick={() => handleStartTest(test.id)}
+                    onClick={() => handleStartTest(test)}
+                    disabled={isSubmitted || !isActive}
                   >
-                    Start Test
+                    {isSubmitted ? 'Already Submitted' : isActive ? 'Start Test' : 'Not Active'}
                   </Button>
                 </CardContent>
               </Card>
-            ))}
+            );
+            })}
           </div>
         )}
       </div>

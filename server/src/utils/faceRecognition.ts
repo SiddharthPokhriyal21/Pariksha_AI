@@ -9,8 +9,32 @@ faceapi.env.monkeyPatch({ Canvas, Image, ImageData } as any);
 
 let modelsLoaded = false;
 // Use path relative to project root - works in both ts-node and compiled code
-// __dirname will be different in ts-node vs compiled, so we use process.cwd()
-const MODEL_PATH = path.resolve(process.cwd(), 'models');
+// For development: __dirname = server/src/utils, so go up 2 levels to server
+// For production: check multiple possible locations
+const getModelPath = (): string => {
+  // First, try relative to __dirname (most reliable)
+  const pathFromDirname = path.resolve(__dirname, '../../models');
+  if (fs.existsSync(pathFromDirname)) {
+    return pathFromDirname;
+  }
+  
+  // Second, try relative to process.cwd() (server directory)
+  const pathFromCwd = path.resolve(process.cwd(), 'models');
+  if (fs.existsSync(pathFromCwd)) {
+    return pathFromCwd;
+  }
+  
+  // Third, try from server root if running from different cwd
+  const pathFromParent = path.resolve(process.cwd(), 'server', 'models');
+  if (fs.existsSync(pathFromParent)) {
+    return pathFromParent;
+  }
+  
+  // Default fallback
+  return pathFromDirname;
+};
+
+const MODEL_PATH = getModelPath();
 
 // Load face-api.js models
 export async function loadFaceModels(): Promise<void> {

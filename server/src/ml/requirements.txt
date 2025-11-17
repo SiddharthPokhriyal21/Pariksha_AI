@@ -1,0 +1,17 @@
+# Proctoring Model Dependencies
+# Install with: pip install -r requirements.txt
+
+# Computer Vision & Object Detection
+opencv-python>=4.8.0
+ultralytics>=8.0.0
+
+# Deep Learning Framework
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Numerical Computing
+numpy>=1.24.0
+
+# For GPU support (optional, uncomment if you have NVIDIA GPU)
+# torch-cuda
+# torchvision-cuda

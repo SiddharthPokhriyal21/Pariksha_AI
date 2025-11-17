@@ -45,6 +45,9 @@ const StudentLogin = () => {
         if (data.user?.id) {
           localStorage.setItem('studentId', data.user.id);
         }
+        if (data.user?.email) {
+          localStorage.setItem('studentEmail', data.user.email);
+        }
         toast({
           title: "Authentication Successful!",
           description: data.message || "Welcome back!",
