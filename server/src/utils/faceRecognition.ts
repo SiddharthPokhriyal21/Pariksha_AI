@@ -44,9 +44,9 @@ export async function loadFaceModels(): Promise<void> {
 
   try {
     // Log the path being used for debugging
-    console.log('🔍 Looking for models at:', MODEL_PATH);
-    console.log('🔍 Current working directory:', process.cwd());
-    console.log('🔍 Current __dirname:', __dirname);
+    console.log('Looking for models at:', MODEL_PATH);
+    console.log('Current working directory:', process.cwd());
+    console.log('Current __dirname:', __dirname);
     
     // Check if models directory exists, if not, create it
     if (!fs.existsSync(MODEL_PATH)) {
@@ -77,7 +77,7 @@ export async function loadFaceModels(): Promise<void> {
       throw new Error(`Missing required model files: ${missingFiles.join(', ')}`);
     }
 
-    console.log('📦 Loading face recognition models...');
+    console.log('Loading face recognition models...');
     
     // Load models with individual error handling
     try {
