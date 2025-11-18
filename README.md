@@ -216,6 +216,8 @@ The Vite dev server prints the local URL (default `http://localhost:5173`).
 | Seed sample test | `cd server; npx ts-node scripts/seedSampleTest.ts;` |
 
 ---
+## 📄 More Details
+See full documentation here → [INFO.md](./INFO.md)
 
 ## License
 No license has been applied to this project yet.
