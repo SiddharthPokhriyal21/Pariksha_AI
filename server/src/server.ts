@@ -25,6 +25,9 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const MONGODB_URI = process.env.MONGODB_URI;
 
+console.log("LOOK HERE");
+console.log(MONGODB_URI);
+
 // --- Mock Database (Simulating data storage) ---
 interface Question {
   id: number;
@@ -409,15 +412,76 @@ app.post('/api/examiner/tests', async (req: Request, res: Response) => {
     // Get examiner ID from request (you may need to add authentication middleware)
     const examiner = examinerId || 'unknown'; // TODO: Get from auth token
 
+    // Determine a valid Mongo ObjectId for createdBy if possible
+    let createdByObj: any = undefined;
+    if (examinerId && mongoose.isValidObjectId(examinerId)) {
+      createdByObj = new mongoose.Types.ObjectId(examinerId);
+    }
+
+    // Validate & sanitize submitted questions before persisting
+    const sanitizedQuestions: any[] = [];
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i] || {};
+      const type = q.type || 'mcq';
+      const questionText = (q.question || q.questionText || '').toString().trim();
+
+      if (!questionText) {
+        return res.status(400).json({
+          message: `Invalid question at index ${i}: text required`,
+          error: 'INVALID_QUESTION',
+          details: { index: i, reason: 'Question text is required' }
+        });
+      }
+
+      let options: string[] = [];
+      if (type === 'mcq') {
+        if (!Array.isArray(q.options)) {
+          return res.status(400).json({
+            message: `Invalid question at index ${i}: options required for MCQ`,
+            error: 'INVALID_QUESTION',
+            details: { index: i, reason: 'MCQ questions require an options array' }
+          });
+        }
+        options = q.options.map((o: any) => (o || '').toString().trim()).filter(Boolean);
+        if (options.length < 2) {
+          return res.status(400).json({
+            message: `Invalid question at index ${i}: at least two options required`,
+            error: 'INVALID_QUESTION_OPTIONS',
+            details: { index: i, reason: 'MCQ questions require at least two options' }
+          });
+        }
+      }
+
+      const correctAnswer = type === 'mcq'
+        ? (typeof q.correctAnswer === 'number' && q.correctAnswer >= 0 && q.correctAnswer < options.length ? q.correctAnswer : 0)
+        : q.correctAnswer ?? null;
+
+      sanitizedQuestions.push({
+        type,
+        questionText,
+        options,
+        correctAnswer,
+        marks: typeof q.marks === 'number' ? q.marks : 1,
+        sampleInput: q.sampleInput,
+        sampleOutput: q.sampleOutput,
+        constraints: q.constraints,
+        codingStarterCode: q.codingStarterCode,
+        codingFunctionSignature: q.codingFunctionSignature,
+        codingTestCases: q.codingTestCases,
+        subjectiveRubric: q.subjectiveRubric,
+        referenceAnswer: q.referenceAnswer,
+      });
+    }
+
     // Persist reusable questions in dedicated collection and collect their IDs
     const createdQuestions = await Promise.all(
-      questions.map((q: any) =>
-        new Question({
-          type: q.type || 'mcq',
-          questionText: q.question,
+      sanitizedQuestions.map((q: any) => {
+        const doc: any = {
+          type: q.type,
+          questionText: q.questionText,
           options: q.type === 'mcq' ? q.options : [],
-          correctAnswer: q.type === 'mcq' ? q.correctAnswer : q.correctAnswer ?? null,
-          marks: typeof q.marks === 'number' ? q.marks : 1,
+          correctAnswer: q.correctAnswer,
+          marks: q.marks,
           sampleInput: q.sampleInput,
           sampleOutput: q.sampleOutput,
           constraints: q.constraints,
@@ -426,9 +490,11 @@ app.post('/api/examiner/tests', async (req: Request, res: Response) => {
           codingTestCases: q.codingTestCases,
           subjectiveRubric: q.subjectiveRubric,
           referenceAnswer: q.referenceAnswer,
-          createdBy: examiner,
-        }).save()
-      )
+        } as any;
+
+        if (createdByObj) doc.createdBy = createdByObj;
+        return new Question(doc).save();
+      })
     );
 
     const questionIds = createdQuestions.map((q) => q._id);
@@ -441,20 +507,25 @@ app.post('/api/examiner/tests', async (req: Request, res: Response) => {
       : new Date(start.getTime() + (duration || 60) * 60 * 1000);
 
     // Create test in MongoDB
-    const newTest = new Test({
+    const newTestData: any = {
       name: testName,
       description: description || '',
       examinerId: examiner,
       status: 'scheduled',
       duration: duration || 60, // Default 60 minutes
-      createdBy: examiner,
       questionIds,
       allowedStudents: Array.isArray(allowedStudents)
         ? allowedStudents.map((email: string) => email.toLowerCase().trim()).filter(Boolean)
         : [],
       startTime: start,
       endTime: end,
-    });
+    };
+
+    if (createdByObj) {
+      newTestData.createdBy = createdByObj;
+    }
+
+    const newTest = new Test(newTestData);
 
     await newTest.save();
 
@@ -467,9 +538,17 @@ app.post('/api/examiner/tests', async (req: Request, res: Response) => {
     console.error('Create test error:', error);
 
     if (error.name === 'ValidationError') {
+      // Extract validation messages to help the client
+      const details: any = {};
+      if (error.errors) {
+        Object.keys(error.errors).forEach((key) => {
+          details[key] = error.errors[key].message || error.errors[key];
+        });
+      }
       return res.status(400).json({
         message: 'Validation failed',
         error: 'VALIDATION_ERROR',
+        details,
       });
     }
 
@@ -615,49 +694,91 @@ app.post('/api/examiner/ai-generate', async (req: Request, res: Response) => {
 });
 
 // Fetches results for a specific test (used by TestResults.tsx)
-app.get('/api/examiner/results/:testId', (req: Request, res: Response) => {
-    const { testId } = req.params;
-    
-    res.status(200).json({ 
-        testId,
-        testName: MOCK_DB.tests.find(t => t.id === parseInt(testId))?.name || "Unknown Test",
-        students: MOCK_DB.results 
+app.get('/api/examiner/results/:testId', async (req: Request, res: Response) => {
+  const { testId } = req.params;
+  try {
+    const test = await Test.findById(testId);
+    if (!test) {
+      return res.status(404).json({ message: 'Test not found' });
+    }
+
+    // Get all attempts for this test
+    const attempts = await ExamAttempt.find({ testId: test._id }).populate('studentId', 'fullName email');
+
+    const students = await Promise.all(attempts.map(async (a: any) => {
+      const student = a.studentId as any;
+      const violations = await ProctoringLog.countDocuments({ attemptId: a._id });
+      return {
+        attemptId: (a._id as any).toString(),
+        studentId: (student?._id as any)?.toString() || null,
+        name: student?.fullName || student?.name || 'Unknown',
+        email: student?.email || 'unknown',
+        actualScore: a.totalScore ?? 0,
+        trustScore: a.trustScore ?? 0,
+        violationsCount: a.totalViolations ?? violations ?? 0,
+        status: a.status,
+      };
+    }));
+
+    res.status(200).json({
+      testId: (test._id as any).toString(),
+      testName: test.name,
+      totalStudents: test.allowedStudents?.length || students.length,
+      students,
     });
+  } catch (error) {
+    console.error('Get test results error:', error);
+    res.status(500).json({ message: 'Failed to fetch test results.' });
+  }
 });
 
 // Fetches detailed student report (used by StudentReport.tsx)
-app.get('/api/examiner/report/:studentId/:testId', (req: Request, res: Response) => {
-    const studentIdNum = parseInt(req.params.studentId);
-    
-    const student = MOCK_DB.results.find(s => s.id === studentIdNum);
-    
-    if (!student) {
-        return res.status(404).json({ message: 'Student result not found' });
+app.get('/api/examiner/report/:studentId/:testId', async (req: Request, res: Response) => {
+  const { studentId, testId } = req.params;
+  try {
+    const test = await Test.findById(testId);
+    if (!test) return res.status(404).json({ message: 'Test not found' });
+
+    // Try to interpret param as attemptId first
+    let attempt = await ExamAttempt.findOne({ _id: studentId, testId: test._id }).populate('studentId', 'fullName email');
+
+    if (!attempt) {
+      // Fallback to treating param as studentId (user id)
+      attempt = await ExamAttempt.findOne({ testId: test._id, studentId }).populate('studentId', 'fullName email');
     }
 
-    const studentViolations = MOCK_DB.violations.filter(v => v.studentId === studentIdNum);
+    if (!attempt) return res.status(404).json({ message: 'Attempt not found for this student and test' });
 
-    const report = {
-        student: {
-            name: student.name,
-            email: student.email,
-            actualScore: student.actualScore,
-            trustScore: student.trustScore,
-        },
-        violations: studentViolations.map(v => ({
-            time: v.time,
-            type: v.type,
-            severity: v.severity,
-            // Mock image data. In production, this would be a real image URL/data.
-            image: "/public/placeholder.svg" 
-        })),
-        testSummary: {
-            duration: "58:34",
-            questionsAnswered: "25/25"
-        }
-    };
+    // Fetch proctoring logs for this attempt
+    const logs = await ProctoringLog.find({ attemptId: attempt._id }).sort({ timestamp: 1 }).lean();
 
-    res.status(200).json(report);
+    res.status(200).json({
+      student: {
+        id: (attempt.studentId as any)?._id?.toString() || studentId,
+        name: (attempt.studentId as any)?.fullName || (attempt.studentId as any)?.name || 'Unknown',
+        email: (attempt.studentId as any)?.email || 'unknown',
+      },
+      attempt: {
+        id: (attempt._id as any).toString(),
+        startedAt: attempt.startedAt,
+        endedAt: attempt.endedAt,
+        duration: attempt.duration,
+        totalScore: attempt.totalScore,
+        trustScore: attempt.trustScore,
+        answers: attempt.answers,
+      },
+      logs: logs.map((l: any) => ({
+        id: (l._id as any).toString(),
+        label: l.label,
+        severity: l.severity,
+        timestamp: l.timestamp,
+        imageId: l.imageId,
+      })),
+    });
+  } catch (error) {
+    console.error('Get student report error:', error);
+    res.status(500).json({ message: 'Failed to fetch report' });
+  }
 });
 
 // ===============================

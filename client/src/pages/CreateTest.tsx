@@ -26,6 +26,9 @@ const CreateTest = () => {
   const [questions, setQuestions] = useState<Question[]>([
     { id: 1, question: '', options: ['', '', '', ''], correctAnswer: 0 }
   ]);
+  const [duration, setDuration] = useState<number>(60);
+  const [startTime, setStartTime] = useState<string>('');
+  const [allowedStudentsInput, setAllowedStudentsInput] = useState<string>('');
 
   const addQuestion = () => {
     setQuestions([...questions, { 
@@ -68,6 +71,8 @@ const CreateTest = () => {
           ...q,
           id: idx + 1
         })));
+        // Switch to manual mode so generated questions are visible for review/editing
+        setCreationMode('manual');
         toast({
           title: "Test Generated!",
           description: data.message || "Review and edit the generated questions",
@@ -99,28 +104,45 @@ const CreateTest = () => {
       return;
     }
 
-    // Validate questions
-    const validQuestions = questions.filter(q => 
-      q.question.trim() && q.options.every(opt => opt.trim())
-    );
+    // Validate questions (ensure question text and at least two non-empty options for MCQ)
+    const sanitizedQuestions = questions.map((q) => ({
+      ...q,
+      question: (q.question || '').toString().trim(),
+      options: Array.isArray(q.options) ? q.options.map((o: any) => (o || '').toString().trim()).filter(Boolean) : [],
+    })).filter((q) => q.question && (q.options.length >= 2));
 
-    if (validQuestions.length === 0) {
+    if (sanitizedQuestions.length === 0) {
       toast({
         title: "Questions Required",
-        description: "Please add at least one valid question",
+        description: "Please add at least one valid question with two or more options",
         variant: "destructive",
       });
       return;
     }
 
     try {
+      const allowedStudents = allowedStudentsInput
+        .split(',')
+        .map(s => s.trim().toLowerCase())
+        .filter(Boolean);
+
+      const payload: any = {
+        testName,
+        questions: sanitizedQuestions,
+        duration,
+        allowedStudents,
+      };
+
+      if (startTime) {
+        payload.startTime = new Date(startTime).toISOString();
+        // also include endTime for clarity
+        payload.endTime = new Date(new Date(startTime).getTime() + duration * 60 * 1000).toISOString();
+      }
+
       const response = await fetch(getApiUrl('/api/examiner/tests'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          testName,
-          questions: validQuestions
-        })
+        body: JSON.stringify(payload)
       });
 
       if (response.ok) {
@@ -132,13 +154,15 @@ const CreateTest = () => {
         navigate('/examiner/dashboard');
       } else {
         const error = await response.json();
+        // Show validation details if provided
+        const details = error.details ? ` (${JSON.stringify(error.details)})` : '';
         toast({
           title: "Save Failed",
-          description: error.message || "Failed to save test. Please try again.",
+          description: (error.message || "Failed to save test. Please try again.") + details,
           variant: "destructive",
         });
       }
-    } catch (error) {
+    } catch (error: any) {
       toast({
         title: "Error",
         description: "Failed to save test. Please try again.",
@@ -222,6 +246,30 @@ const CreateTest = () => {
                   <Sparkles className="mr-2 h-4 w-4" />
                   Generate Questions with AI
                 </Button>
+
+                {/* Quick preview of generated questions when in AI mode */}
+                {questions && questions.length > 0 && (
+                  <Card className="mt-4">
+                    <CardHeader>
+                      <CardTitle>Generated Questions Preview</CardTitle>
+                      <CardDescription>Switching to manual mode will let you edit questions and save the test</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-3">
+                        {questions.map((q) => (
+                          <div key={q.id} className="p-3 border rounded">
+                            <div className="font-semibold">{q.question}</div>
+                            <div className="mt-2 text-sm text-muted-foreground">
+                              {q.options?.map((opt, i) => (
+                                <div key={i}>• {opt}</div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
               </div>
             ) : (
               <div className="space-y-6">
@@ -285,6 +333,23 @@ const CreateTest = () => {
                     </CardContent>
                   </Card>
                 ))}
+
+                <div className="grid md:grid-cols-3 gap-4">
+                  <div>
+                    <Label>Duration (minutes)</Label>
+                    <Input type="number" value={duration} onChange={(e) => setDuration(parseInt(e.target.value || '60'))} />
+                  </div>
+
+                  <div>
+                    <Label>Start Time (optional)</Label>
+                    <Input type="datetime-local" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+                  </div>
+
+                  <div>
+                    <Label>Allowed Students (comma separated emails)</Label>
+                    <Input placeholder="email1@example.com, email2@example.com" value={allowedStudentsInput} onChange={(e) => setAllowedStudentsInput(e.target.value)} />
+                  </div>
+                </div>
 
                 <Button onClick={addQuestion} variant="outline" className="w-full">
                   <Plus className="mr-2 h-4 w-4" />

@@ -1,42 +1,44 @@
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, AlertTriangle, CheckCircle, Camera, Clock } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { getApiUrl } from "@/lib/api-config";
 
 const StudentReport = () => {
   const navigate = useNavigate();
   const { studentId, testId } = useParams();
 
-  // Mock data
-  const student = {
-    name: "Bob Smith",
-    email: "bob@example.com",
-    actualScore: 87,
-    trustScore: 75,
-  };
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [student, setStudent] = useState<any | null>(null);
+  const [attempt, setAttempt] = useState<any | null>(null);
+  const [logs, setLogs] = useState<Array<any>>([]);
 
-  const violations = [
-    { 
-      time: "10:15:23", 
-      type: "Multiple Faces Detected", 
-      severity: "high",
-      image: null // Would contain image data in real implementation
-    },
-    { 
-      time: "10:22:45", 
-      type: "Looking Away", 
-      severity: "medium",
-      image: null
-    },
-    { 
-      time: "10:35:12", 
-      type: "Phone Detected", 
-      severity: "high",
-      image: null
-    },
-  ];
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        if (!studentId || !testId) return;
+        const res = await fetch(getApiUrl(`/api/examiner/report/${studentId}/${testId}`));
+        if (!res.ok) throw new Error('Failed to fetch report');
+        const data = await res.json();
+        setStudent(data.student);
+        setAttempt(data.attempt);
+        setLogs(data.logs || []);
+        setError(null);
+      } catch (err: any) {
+        console.error('Load report error:', err);
+        setError(err.message || 'Failed to load report');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, [studentId, testId]);
 
   const getSeverityColor = (severity: string) => {
     switch (severity) {
@@ -62,18 +64,18 @@ const StudentReport = () => {
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle className="text-2xl">{student.name}</CardTitle>
-                <CardDescription>{student.email}</CardDescription>
+                <CardTitle className="text-2xl">{loading ? 'Loading...' : error ? 'Error' : student?.name}</CardTitle>
+                <CardDescription>{loading ? '' : error ? error : student?.email}</CardDescription>
               </div>
               <div className="flex gap-4">
                 <div className="text-right">
                   <p className="text-sm text-muted-foreground">Actual Score</p>
-                  <p className="text-3xl font-bold">{student.actualScore}%</p>
+                  <p className="text-3xl font-bold">{attempt ? attempt.totalScore + '%' : '-'}</p>
                 </div>
                 <div className="text-right">
                   <p className="text-sm text-muted-foreground">Trust Score</p>
-                  <p className={`text-3xl font-bold ${student.trustScore >= 80 ? 'text-success' : 'text-warning'}`}>
-                    {student.trustScore}%
+                  <p className={`text-3xl font-bold ${attempt && attempt.trustScore >= 80 ? 'text-success' : 'text-warning'}`}>
+                    {attempt ? attempt.trustScore + '%' : '-'}
                   </p>
                 </div>
               </div>
@@ -83,21 +85,29 @@ const StudentReport = () => {
             <div className="grid md:grid-cols-3 gap-4">
               <div className="p-4 bg-muted rounded-lg">
                 <p className="text-sm text-muted-foreground">Total Violations</p>
-                <p className="text-2xl font-bold mt-1">{violations.length}</p>
+                <p className="text-2xl font-bold mt-1">{logs.length}</p>
               </div>
               <div className="p-4 bg-muted rounded-lg">
                 <p className="text-sm text-muted-foreground">Test Duration</p>
-                <p className="text-2xl font-bold mt-1">58:34</p>
+                <p className="text-2xl font-bold mt-1">{attempt?.duration ? `${attempt.duration} mins` : '-'}</p>
               </div>
               <div className="p-4 bg-muted rounded-lg">
                 <p className="text-sm text-muted-foreground">Questions Answered</p>
-                <p className="text-2xl font-bold mt-1">25/25</p>
+                <p className="text-2xl font-bold mt-1">{attempt?.answers ? `${attempt.answers.length}/${attempt.questionsAttempted || attempt.answers.length}` : '-'}</p>
               </div>
             </div>
           </CardContent>
         </Card>
 
-        {violations.length > 0 ? (
+        {loading ? (
+          <Card>
+            <CardContent className="py-12">Loading report...</CardContent>
+          </Card>
+        ) : error ? (
+          <Card>
+            <CardContent className="py-12 text-destructive">{error}</CardContent>
+          </Card>
+        ) : logs.length > 0 ? (
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -109,20 +119,20 @@ const StudentReport = () => {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {violations.map((violation, index) => (
+              {logs.map((violation, index) => (
                 <Alert key={index} variant={getSeverityColor(violation.severity) as any}>
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
                       <AlertTitle className="flex items-center gap-2">
                         <Clock className="w-4 h-4" />
-                        {violation.time}
+                        {new Date(violation.timestamp).toLocaleString()}
                       </AlertTitle>
                       <AlertDescription className="mt-2">
                         <div className="flex items-center gap-2">
                           <Badge variant={getSeverityColor(violation.severity) as any}>
                             {violation.severity}
                           </Badge>
-                          <span>{violation.type}</span>
+                          <span>{violation.label}</span>
                         </div>
                       </AlertDescription>
                     </div>

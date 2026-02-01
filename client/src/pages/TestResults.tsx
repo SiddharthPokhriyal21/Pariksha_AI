@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { getApiUrl } from "@/lib/api-config";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -10,12 +11,14 @@ import { ArrowLeft, Search, Mail, AlertTriangle, Trophy } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 interface StudentResult {
-  id: number;
+  attemptId: string;
+  studentId: string | null;
   name: string;
   email: string;
   actualScore: number;
   trustScore: number;
   violationsCount: number;
+  status?: string;
 }
 
 const TestResults = () => {
@@ -24,17 +27,13 @@ const TestResults = () => {
   const { toast } = useToast();
   const [searchTerm, setSearchTerm] = useState('');
   const [sortBy, setSortBy] = useState('name');
-  const [selectedStudents, setSelectedStudents] = useState<number[]>([]);
+  const [selectedStudents, setSelectedStudents] = useState<string[]>([]);
   const [topNStudents, setTopNStudents] = useState('');
 
-  // Mock data
-  const students: StudentResult[] = [
-    { id: 1, name: "Alice Johnson", email: "alice@example.com", actualScore: 95, trustScore: 98, violationsCount: 0 },
-    { id: 2, name: "Bob Smith", email: "bob@example.com", actualScore: 87, trustScore: 75, violationsCount: 3 },
-    { id: 3, name: "Charlie Brown", email: "charlie@example.com", actualScore: 92, trustScore: 95, violationsCount: 1 },
-    { id: 4, name: "Diana Prince", email: "diana@example.com", actualScore: 78, trustScore: 85, violationsCount: 2 },
-    { id: 5, name: "Ethan Hunt", email: "ethan@example.com", actualScore: 89, trustScore: 92, violationsCount: 1 },
-  ];
+  const [students, setStudents] = useState<StudentResult[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
 
   const handleSortChange = (value: string) => {
     setSortBy(value);
@@ -46,7 +45,7 @@ const TestResults = () => {
     if (isNaN(n) || n <= 0) return;
     
     const sorted = [...students].sort((a, b) => b.actualScore - a.actualScore);
-    const topIds = sorted.slice(0, n).map(s => s.id);
+    const topIds = sorted.slice(0, n).map(s => s.studentId || s.attemptId);
     setSelectedStudents(topIds);
   };
 
@@ -60,6 +59,7 @@ const TestResults = () => {
       return;
     }
 
+    // TODO: Integrate with real email API
     toast({
       title: "Emails Sent",
       description: `Successfully sent emails to ${selectedStudents.length} students`,
@@ -71,6 +71,28 @@ const TestResults = () => {
     if (score >= 70) return "text-warning";
     return "text-destructive";
   };
+
+  // Fetch test results
+  useEffect(() => {
+    const load = async () => {
+      if (!testId) return;
+      setLoading(true);
+      try {
+        const res = await fetch(getApiUrl(`/api/examiner/results/${testId}`));
+        if (!res.ok) throw new Error('Failed to fetch results');
+        const data = await res.json();
+        setStudents((data.students || []) as StudentResult[]);
+        setError(null);
+      } catch (err: any) {
+        console.error('Load results error:', err);
+        setError(err.message || 'Failed to load results');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, [testId]);
 
   return (
     <div className="min-h-screen bg-gradient-hero">
@@ -87,7 +109,7 @@ const TestResults = () => {
         <Card className="mb-6">
           <CardHeader>
             <CardTitle className="text-2xl">Test Results</CardTitle>
-            <CardDescription>Mathematics Final Exam - December 18, 2024</CardDescription>
+            <CardDescription>{loading ? 'Loading...' : error ? `Error: ${error}` : ''}</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="grid md:grid-cols-3 gap-4">
@@ -97,15 +119,11 @@ const TestResults = () => {
               </div>
               <div className="p-4 bg-muted rounded-lg">
                 <p className="text-sm text-muted-foreground">Average Score</p>
-                <p className="text-3xl font-bold mt-1">
-                  {Math.round(students.reduce((acc, s) => acc + s.actualScore, 0) / students.length)}%
-                </p>
+                <p className="text-3xl font-bold mt-1">{students.length ? Math.round(students.reduce((acc, s) => acc + s.actualScore, 0) / students.length) + '%' : '-'}</p>
               </div>
               <div className="p-4 bg-muted rounded-lg">
                 <p className="text-sm text-muted-foreground">Violations Detected</p>
-                <p className="text-3xl font-bold mt-1">
-                  {students.reduce((acc, s) => acc + s.violationsCount, 0)}
-                </p>
+                <p className="text-3xl font-bold mt-1">{students.reduce((acc, s) => acc + s.violationsCount, 0)}</p>
               </div>
             </div>
           </CardContent>
@@ -176,61 +194,68 @@ const TestResults = () => {
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {students.map((student) => (
-                <div 
-                  key={student.id}
-                  className={`p-4 border rounded-lg cursor-pointer transition-all ${
-                    selectedStudents.includes(student.id) ? 'bg-primary/5 border-primary' : 'hover:bg-muted/50'
-                  }`}
-                  onClick={() => {
-                    setSelectedStudents(prev => 
-                      prev.includes(student.id) 
-                        ? prev.filter(id => id !== student.id)
-                        : [...prev, student.id]
-                    );
-                  }}
-                >
-                  <div className="flex items-center justify-between flex-wrap gap-4">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-semibold">{student.name}</h3>
-                        {student.violationsCount > 0 && (
-                          <Badge variant="destructive" className="text-xs">
-                            <AlertTriangle className="w-3 h-3 mr-1" />
-                            {student.violationsCount} violations
-                          </Badge>
-                        )}
-                      </div>
-                      <p className="text-sm text-muted-foreground mt-1">{student.email}</p>
-                    </div>
-                    
-                    <div className="flex items-center gap-6">
-                      <div className="text-center">
-                        <p className="text-sm text-muted-foreground">Score</p>
-                        <p className="text-2xl font-bold">{student.actualScore}%</p>
+              {loading ? (
+                <div className="p-4 text-muted-foreground">Loading students...</div>
+              ) : students.length === 0 ? (
+                <div className="p-4 text-muted-foreground">No student attempts found for this test.</div>
+              ) : (
+                students.map((student) => (
+                  <div 
+                    key={student.attemptId}
+                    className={`p-4 border rounded-lg cursor-pointer transition-all ${
+                      selectedStudents.includes(student.studentId || student.attemptId) ? 'bg-primary/5 border-primary' : 'hover:bg-muted/50'
+                    }`}
+                    onClick={() => {
+                      const idKey = student.studentId || student.attemptId;
+                      setSelectedStudents(prev => 
+                        prev.includes(idKey) 
+                          ? prev.filter(id => id !== idKey)
+                          : [...prev, idKey]
+                      );
+                    }}
+                  >
+                    <div className="flex items-center justify-between flex-wrap gap-4">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-semibold">{student.name}</h3>
+                          {student.violationsCount > 0 && (
+                            <Badge variant="destructive" className="text-xs">
+                              <AlertTriangle className="w-3 h-3 mr-1" />
+                              {student.violationsCount} violations
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-sm text-muted-foreground mt-1">{student.email}</p>
                       </div>
                       
-                      <div className="text-center">
-                        <p className="text-sm text-muted-foreground">Trust</p>
-                        <p className={`text-2xl font-bold ${getTrustColor(student.trustScore)}`}>
-                          {student.trustScore}%
-                        </p>
-                      </div>
+                      <div className="flex items-center gap-6">
+                        <div className="text-center">
+                          <p className="text-sm text-muted-foreground">Score</p>
+                          <p className="text-2xl font-bold">{student.actualScore}%</p>
+                        </div>
+                        
+                        <div className="text-center">
+                          <p className="text-sm text-muted-foreground">Trust</p>
+                          <p className={`text-2xl font-bold ${getTrustColor(student.trustScore)}`}>
+                            {student.trustScore}%
+                          </p>
+                        </div>
 
-                      <Button 
-                        variant="outline" 
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          navigate(`/examiner/report/${student.id}/${testId}`);
-                        }}
-                      >
-                        View Report
-                      </Button>
+                        <Button 
+                          variant="outline" 
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/examiner/report/${student.studentId || student.attemptId}/${testId}`);
+                          }}
+                        >
+                          View Report
+                        </Button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           </CardContent>
         </Card>
