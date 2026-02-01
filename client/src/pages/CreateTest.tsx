@@ -1,7 +1,9 @@
 import { useState, useEffect } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -20,6 +22,7 @@ interface Question {
 const CreateTest = () => {
   const navigate = useNavigate();
   const { testId } = useParams<{ testId?: string }>();
+  const location = useLocation();
   const { toast } = useToast();
   const [creationMode, setCreationMode] = useState<'ai' | 'manual'>('ai');
   const [testName, setTestName] = useState('');
@@ -31,6 +34,16 @@ const CreateTest = () => {
   const [startTime, setStartTime] = useState<string>('');
   const [allowedStudentsInput, setAllowedStudentsInput] = useState<string>('');
   const [isEditing, setIsEditing] = useState<boolean>(false);
+
+  // Schedule modal state and students (open by default when creating a new test)
+  const [isScheduleOpen, setIsScheduleOpen] = useState<boolean>(() => !testId);
+  const [students, setStudents] = useState<{ id: string; name: string; email: string }[]>([]);
+  const [studentLoading, setStudentLoading] = useState(false);
+  const [selectedEmails, setSelectedEmails] = useState<Record<string, boolean>>({});
+  const [searchTerm, setSearchTerm] = useState('');
+  const [scheduleName, setScheduleName] = useState('');
+  const [scheduleDuration, setScheduleDuration] = useState<number>(60);
+  const [scheduleStart, setScheduleStart] = useState<string>('');
 
   useEffect(() => {
     if (!testId) return;
@@ -72,6 +85,28 @@ const CreateTest = () => {
     })();
   }, [testId]);
 
+  // Accept prefill state when navigated from Schedule dialog using location.state.schedulePrefill
+  useEffect(() => {
+    const prefill: any = (location && (location as any).state && (location as any).state.schedulePrefill) ? (location as any).state.schedulePrefill : null;
+    if (!prefill) return;
+    if (testId) return; // don't override when editing existing test
+
+    setCreationMode('manual');
+    setTestName(prefill.testName || '');
+    setDuration(prefill.duration || 60);
+    if (prefill.startTime) {
+      const dt = new Date(prefill.startTime);
+      const isoLocal = new Date(dt.getTime() - dt.getTimezoneOffset() * 60000).toISOString().slice(0, -1);
+      setStartTime(isoLocal);
+      setScheduleStart(isoLocal);
+    }
+    setAllowedStudentsInput((prefill.allowedStudents || []).join(', '));
+    // show an empty question for the user to edit
+    setQuestions([{ id: 1, question: '', options: ['', ''], correctAnswer: 0 }]);
+
+    toast({ title: 'Prefill loaded', description: 'Schedule details were prefilled. Add questions and save to create the test.' });
+  }, [location, testId]);
+
   const addQuestion = () => {
     setQuestions([...questions, { 
       id: questions.length + 1, 
@@ -79,6 +114,71 @@ const CreateTest = () => {
       options: ['', '', '', ''], 
       correctAnswer: 0 
     }]);
+  };
+
+  const fetchStudentsForSchedule = async () => {
+    setStudentLoading(true);
+    try {
+      const res = await fetch(getApiUrl('/api/examiner/students'));
+      if (!res.ok) throw new Error('Failed to fetch students');
+      const data = await res.json();
+      setStudents(data.students || []);
+      // initialize selection map only if empty
+      setSelectedEmails(prev => {
+        if (Object.keys(prev).length > 0) return prev;
+        const map: Record<string, boolean> = {};
+        (data.students || []).forEach((s: any) => (map[s.email] = false));
+        return map;
+      });
+    } catch (err: any) {
+      console.error('Fetch students error:', err);
+      toast({ title: 'Failed to load students', description: err?.message || 'Could not retrieve students', variant: 'destructive' });
+    } finally {
+      setStudentLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isScheduleOpen) return;
+    fetchStudentsForSchedule();
+  }, [isScheduleOpen]);
+
+  const filteredStudents = students.filter(s => !searchTerm || s.name.toLowerCase().includes(searchTerm.toLowerCase()) || s.email.toLowerCase().includes(searchTerm.toLowerCase()));
+
+  const toggleSelect = (email: string) => {
+    setSelectedEmails(prev => ({ ...prev, [email]: !prev[email] }));
+  };
+
+  const selectAll = () => {
+    const map: Record<string, boolean> = {};
+    filteredStudents.forEach(s => map[s.email] = true);
+    setSelectedEmails(prev => ({ ...prev, ...map }));
+  };
+
+  const clearSelection = () => {
+    const map: Record<string, boolean> = {};
+    Object.keys(selectedEmails).forEach(k => map[k] = false);
+    setSelectedEmails(map);
+  };
+
+  const handleUseSelection = () => {
+    const emails = Object.keys(selectedEmails).filter(e => selectedEmails[e]);
+    if (!scheduleName.trim()) {
+      toast({ title: 'Test name required', description: 'Please provide a name for the scheduled test', variant: 'destructive' });
+      return;
+    }
+    if (emails.length === 0) {
+      toast({ title: 'No students selected', description: 'Please select at least one student to invite', variant: 'destructive' });
+      return;
+    }
+
+    setTestName(scheduleName);
+    setDuration(scheduleDuration);
+    setStartTime(scheduleStart);
+    setAllowedStudentsInput(emails.join(', '));
+    setIsScheduleOpen(false);
+    setCreationMode('manual');
+    toast({ title: 'Selection applied', description: 'You can now add questions and save the test.' });
   };
 
   const removeQuestion = (id: number) => {
@@ -402,7 +502,74 @@ const CreateTest = () => {
                   Add Question
                 </Button>
               </div>
+
+
             )}
+
+            {/* Schedule dialog moved into CreateTest so 'Create Test' opens the scheduling UI first */}
+            <Dialog open={isScheduleOpen} onOpenChange={setIsScheduleOpen}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Invite Students / Schedule</DialogTitle>
+                  <DialogDescription>Choose students to invite and set schedule details before creating your test</DialogDescription>
+                </DialogHeader>
+
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="scheduleName">Test Name</Label>
+                    <Input id="scheduleName" placeholder="e.g., Final Exam - Biology" value={scheduleName || testName} onChange={(e) => setScheduleName(e.target.value)} />
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div>
+                      <Label htmlFor="scheduleStart">Start Time</Label>
+                      <Input id="scheduleStart" type="datetime-local" value={scheduleStart || startTime} onChange={(e) => setScheduleStart(e.target.value)} />
+                    </div>
+                    <div>
+                      <Label htmlFor="scheduleDuration">Duration (minutes)</Label>
+                      <Input id="scheduleDuration" type="number" value={scheduleDuration || duration} onChange={(e) => setScheduleDuration(parseInt(e.target.value || '60'))} />
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label>Filter Students</Label>
+                    <Input placeholder="Search by name or email" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" onClick={selectAll}>Select Visible</Button>
+                    <Button variant="ghost" onClick={clearSelection}>Clear</Button>
+                  </div>
+
+                  <div className="max-h-64 overflow-auto border rounded p-2 space-y-2">
+                    {studentLoading ? (
+                      <div className="text-muted-foreground p-2">Loading students...</div>
+                    ) : filteredStudents.length === 0 ? (
+                      <div className="text-muted-foreground p-2">No students found.</div>
+                    ) : (
+                      filteredStudents.map(s => (
+                        <div key={s.email} className="flex items-center justify-between p-2 rounded hover:bg-muted/50">
+                          <div className="flex items-center gap-3">
+                            <Checkbox checked={!!selectedEmails[s.email]} onCheckedChange={() => toggleSelect(s.email)} />
+                            <div>
+                              <div className="font-medium">{s.name}</div>
+                              <div className="text-sm text-muted-foreground">{s.email}</div>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <DialogFooter>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" onClick={() => setIsScheduleOpen(false)}>Cancel</Button>
+                    <Button variant="secondary" onClick={handleUseSelection}>Use Selection</Button>
+                  </div>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
 
             <div className="flex gap-3 pt-4">
               <Button variant="outline" onClick={() => navigate('/examiner/dashboard')} className="flex-1">

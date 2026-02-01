@@ -7,6 +7,8 @@ import { Calendar, FileText, Plus, BarChart3, Users, LogOut, Trash, Edit } from 
 import { getApiUrl } from "@/lib/api-config";
 import { useToast } from "@/hooks/use-toast";
 
+
+
 type Stat = {
   label: string;
   value: string;
@@ -79,6 +81,9 @@ const ExaminerDashboard = () => {
       setLoading(false);
     }
   };
+
+
+
 
   useEffect(() => {
     fetchDashboard();
@@ -190,19 +195,7 @@ const ExaminerDashboard = () => {
             </CardHeader>
           </Card>
 
-          <Card className="cursor-pointer hover:shadow-lg transition-shadow">
-            <CardHeader>
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-secondary/10 rounded-lg">
-                  <Calendar className="w-6 h-6 text-secondary" />
-                </div>
-                <div>
-                  <CardTitle>Schedule Test</CardTitle>
-                  <CardDescription>Set date and invite students</CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-          </Card>
+
         </div>
 
         {/* Tests List */}

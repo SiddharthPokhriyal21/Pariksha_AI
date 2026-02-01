@@ -603,6 +603,22 @@ app.get('/api/examiner/tests/:testId', async (req: Request, res: Response) => {
   }
 });
 
+// List students (for scheduling tests)
+app.get('/api/examiner/students', async (req: Request, res: Response) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available. Please try again later.', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    const students = await User.find({ role: 'student' }).select('fullName email');
+    const result = (students || []).map((s: any) => ({ id: (s._id as any).toString(), name: s.fullName, email: s.email }));
+    res.status(200).json({ students: result });
+  } catch (error: any) {
+    console.error('Fetch students error:', error);
+    res.status(500).json({ message: 'Failed to fetch students', error: error?.message });
+  }
+});
+
 // Update a test
 app.put('/api/examiner/tests/:testId', async (req: Request, res: Response) => {
   const { testId } = req.params;
