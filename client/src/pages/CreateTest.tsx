@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -19,6 +19,7 @@ interface Question {
 
 const CreateTest = () => {
   const navigate = useNavigate();
+  const { testId } = useParams<{ testId?: string }>();
   const { toast } = useToast();
   const [creationMode, setCreationMode] = useState<'ai' | 'manual'>('ai');
   const [testName, setTestName] = useState('');
@@ -29,6 +30,47 @@ const CreateTest = () => {
   const [duration, setDuration] = useState<number>(60);
   const [startTime, setStartTime] = useState<string>('');
   const [allowedStudentsInput, setAllowedStudentsInput] = useState<string>('');
+  const [isEditing, setIsEditing] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!testId) return;
+    // Fetch test details for editing
+    (async () => {
+      try {
+        const resp = await fetch(getApiUrl(`/api/examiner/tests/${testId}`));
+        if (!resp.ok) {
+          let bodyText = '';
+          try {
+            const errBody = await resp.json();
+            bodyText = errBody?.message || JSON.stringify(errBody);
+          } catch (e) {
+            bodyText = await resp.text().catch(() => '');
+          }
+          toast({ title: `Failed to load test (${resp.status})`, description: bodyText || 'Could not fetch test for editing', variant: 'destructive' });
+          console.error('Fetch test failed', resp.status, bodyText);
+          return;
+        }
+        const data = await resp.json();
+        setIsEditing(true);
+        setCreationMode('manual');
+        setTestName(data.name || '');
+        setDuration(data.duration || 60);
+        if (data.startTime) {
+          // convert to datetime-local value
+          const dt = new Date(data.startTime);
+          const isoLocal = new Date(dt.getTime() - dt.getTimezoneOffset() * 60000).toISOString().slice(0, -1);
+          setStartTime(isoLocal);
+        }
+        setAllowedStudentsInput((data.allowedStudents || []).join(', '));
+        if (Array.isArray(data.questions)) {
+          setQuestions(data.questions.map((q: any, idx: number) => ({ id: idx + 1, question: q.question || q.questionText || '', options: q.options || ['', '', '', ''], correctAnswer: typeof q.correctAnswer === 'number' ? q.correctAnswer : 0 })));
+        }
+      } catch (err: any) {
+        toast({ title: 'Error', description: (err && err.message) ? `Failed to fetch test: ${err.message}` : 'Failed to fetch test for editing', variant: 'destructive' });
+        console.error('Fetch test error', err);
+      }
+    })();
+  }, [testId]);
 
   const addQuestion = () => {
     setQuestions([...questions, { 
@@ -139,8 +181,12 @@ const CreateTest = () => {
         payload.endTime = new Date(new Date(startTime).getTime() + duration * 60 * 1000).toISOString();
       }
 
-      const response = await fetch(getApiUrl('/api/examiner/tests'), {
-        method: 'POST',
+      // Decide whether to create or update
+      const url = isEditing && testId ? getApiUrl(`/api/examiner/tests/${testId}`) : getApiUrl('/api/examiner/tests');
+      const method = isEditing && testId ? 'PUT' : 'POST';
+
+      const response = await fetch(url, {
+        method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
@@ -148,8 +194,8 @@ const CreateTest = () => {
       if (response.ok) {
         const data = await response.json();
         toast({
-          title: "Test Created!",
-          description: data.message || "Your test has been saved successfully",
+          title: isEditing ? "Test Updated!" : "Test Created!",
+          description: data.message || (isEditing ? "Your test has been updated successfully" : "Your test has been saved successfully"),
         });
         navigate('/examiner/dashboard');
       } else {
@@ -157,7 +203,7 @@ const CreateTest = () => {
         // Show validation details if provided
         const details = error.details ? ` (${JSON.stringify(error.details)})` : '';
         toast({
-          title: "Save Failed",
+          title: isEditing ? "Update Failed" : "Save Failed",
           description: (error.message || "Failed to save test. Please try again.") + details,
           variant: "destructive",
         });
@@ -185,7 +231,7 @@ const CreateTest = () => {
       <div className="container max-w-4xl mx-auto px-4 py-8">
         <Card>
           <CardHeader>
-            <CardTitle className="text-2xl">Create New Test</CardTitle>
+            <CardTitle className="text-2xl">{isEditing ? 'Edit Test' : 'Create New Test'}</CardTitle>
             <CardDescription>Generate questions with AI or create manually</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
@@ -363,7 +409,7 @@ const CreateTest = () => {
                 Cancel
               </Button>
               <Button onClick={handleSaveTest} className="flex-1">
-                Save Test
+                {isEditing ? 'Update Test' : 'Save Test'}
               </Button>
             </div>
           </CardContent>

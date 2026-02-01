@@ -36,6 +36,7 @@ const App = () => (
           <Route path="/student/test" element={<StudentTest />} />
           <Route path="/examiner/dashboard" element={<ExaminerDashboard />} />
           <Route path="/examiner/create-test" element={<CreateTest />} />
+          <Route path="/examiner/create-test/:testId" element={<CreateTest />} />
           <Route path="/examiner/results/:testId" element={<TestResults />} />
           <Route path="/examiner/report/:studentId/:testId" element={<StudentReport />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

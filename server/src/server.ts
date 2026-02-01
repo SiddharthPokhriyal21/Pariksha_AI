@@ -559,6 +559,127 @@ app.post('/api/examiner/tests', async (req: Request, res: Response) => {
   }
 });
 
+// Fetch a test with populated questions (used for editing)
+app.get('/api/examiner/tests/:testId', async (req: Request, res: Response) => {
+  const { testId } = req.params;
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available. Please try again later.', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    if (!mongoose.isValidObjectId(testId)) {
+      return res.status(400).json({ message: 'Invalid test id provided.', error: 'INVALID_ID' });
+    }
+
+    const test = await Test.findById(testId).populate('questionIds');
+    if (!test) return res.status(404).json({ message: 'Test not found' });
+
+    const questions = (test.questionIds || []).map((q: any, idx: number) => ({
+      id: (q._id as any).toString(),
+      question: q.questionText,
+      type: q.type,
+      options: q.options || [],
+      correctAnswer: q.correctAnswer ?? 0,
+      marks: q.marks ?? 1,
+    }));
+
+    res.status(200).json({
+      testId: (test._id as any).toString(),
+      name: test.name,
+      description: test.description,
+      duration: test.duration,
+      startTime: test.startTime,
+      endTime: test.endTime,
+      allowedStudents: test.allowedStudents || [],
+      status: test.status,
+      questions,
+    });
+  } catch (error: any) {
+    console.error('Get test for edit error:', error);
+    if (error.name === 'CastError') {
+      return res.status(400).json({ message: 'Invalid test id', error: 'INVALID_ID' });
+    }
+    res.status(500).json({ message: 'Failed to fetch test', error: error?.message });
+  }
+});
+
+// Update a test
+app.put('/api/examiner/tests/:testId', async (req: Request, res: Response) => {
+  const { testId } = req.params;
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available.', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    const { testName, description, questions, duration, allowedStudents, startTime, endTime, status, examinerId } = req.body;
+
+    const test = await Test.findById(testId);
+    if (!test) return res.status(404).json({ message: 'Test not found' });
+
+    // Validate & sanitize incoming questions (same as create flow)
+    if (!testName || !questions || !Array.isArray(questions) || questions.length === 0) {
+      return res.status(400).json({ message: 'Test name and questions are required.', error: 'MISSING_FIELDS' });
+    }
+
+    const sanitizedQuestions: any[] = [];
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i] || {};
+      const type = q.type || 'mcq';
+      const questionText = (q.question || q.questionText || '').toString().trim();
+
+      if (!questionText) {
+        return res.status(400).json({ message: `Invalid question at index ${i}: text required`, error: 'INVALID_QUESTION', details: { index: i } });
+      }
+
+      let options: string[] = [];
+      if (type === 'mcq') {
+        options = Array.isArray(q.options) ? q.options.map((o: any) => (o || '').toString().trim()).filter(Boolean) : [];
+        if (options.length < 2) {
+          return res.status(400).json({ message: `Invalid question at index ${i}: at least two options required`, error: 'INVALID_QUESTION_OPTIONS', details: { index: i } });
+        }
+      }
+
+      const correctAnswer = type === 'mcq' ? (typeof q.correctAnswer === 'number' && q.correctAnswer >= 0 && q.correctAnswer < options.length ? q.correctAnswer : 0) : q.correctAnswer ?? null;
+
+      sanitizedQuestions.push({ type, questionText, options, correctAnswer, marks: typeof q.marks === 'number' ? q.marks : 1 });
+    }
+
+    // Create new question docs for the updated questions
+    const createdQuestions = await Promise.all(sanitizedQuestions.map((q) => new Question({ type: q.type, questionText: q.questionText, options: q.options, correctAnswer: q.correctAnswer, marks: q.marks }).save()));
+    const newQuestionIds = createdQuestions.map(q => q._id);
+
+    // Keep a copy of old question ids to clean up orphans
+    const oldQuestionIds = test.questionIds ? [...test.questionIds] : [];
+
+    // Update test fields
+    test.name = testName;
+    test.description = description || '';
+    test.duration = duration || test.duration;
+    test.allowedStudents = Array.isArray(allowedStudents) ? allowedStudents.map((e: string) => e.toLowerCase().trim()).filter(Boolean) : test.allowedStudents;
+    test.startTime = startTime ? new Date(startTime) : test.startTime;
+    test.endTime = endTime ? new Date(endTime) : test.endTime;
+    test.status = status || test.status;
+    test.questionIds = newQuestionIds;
+
+    await test.save();
+
+    // Clean up orphan questions from previous version
+    for (const qId of oldQuestionIds) {
+      const count = await Test.countDocuments({ questionIds: qId });
+      if (count === 0) {
+        await Question.deleteOne({ _id: qId });
+      }
+    }
+
+    res.status(200).json({ message: 'Test updated successfully', testId: (test._id as any).toString() });
+  } catch (error) {
+    console.error('Update test error:', error);
+    res.status(500).json({ message: 'Failed to update test' });
+  }
+});
+
+// AI generation API for CreateTest.tsx
+
 // AI generation API for CreateTest.tsx
 app.post('/api/examiner/ai-generate', async (req: Request, res: Response) => {
     const { aiPrompt } = req.body;
@@ -729,6 +850,54 @@ app.get('/api/examiner/results/:testId', async (req: Request, res: Response) => 
   } catch (error) {
     console.error('Get test results error:', error);
     res.status(500).json({ message: 'Failed to fetch test results.' });
+  }
+});
+
+// Delete a test and related data (attempts, logs, recordings). Reviewer: this is a destructive action.
+app.delete('/api/examiner/tests/:testId', async (req: Request, res: Response) => {
+  const { testId } = req.params;
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available.', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    const test = await Test.findById(testId);
+    if (!test) return res.status(404).json({ message: 'Test not found', error: 'NOT_FOUND' });
+
+    // Find all attempts for this test
+    const attempts = await ExamAttempt.find({ testId: test._id }).select('_id').lean();
+    const attemptIds = attempts.map(a => (a._id as any));
+
+    // Delete proctoring logs for these attempts
+    if (attemptIds.length) {
+      await ProctoringLog.deleteMany({ attemptId: { $in: attemptIds } });
+    }
+
+    // Delete exam attempts
+    await ExamAttempt.deleteMany({ testId: test._id });
+
+    // Delete test recordings associated with this test
+    const TestRecording = (await import('./models/TestRecording')).default;
+    await TestRecording.deleteMany({ testId: (test._id as any).toString() });
+
+    // Remove the test itself
+    await Test.deleteOne({ _id: test._id });
+
+    // Clean up orphan questions: only delete Question docs that are NOT referenced by any other test
+    if (test.questionIds && test.questionIds.length) {
+      const QuestionModel = Question; // imported at top
+      for (const qId of test.questionIds) {
+        const referencingTests = await Test.countDocuments({ questionIds: qId });
+        if (referencingTests === 0) {
+          await QuestionModel.deleteOne({ _id: qId });
+        }
+      }
+    }
+
+    res.status(200).json({ message: 'Test and related data deleted successfully' });
+  } catch (error) {
+    console.error('Delete test error:', error);
+    res.status(500).json({ message: 'Failed to delete test' });
   }
 });
 

@@ -3,8 +3,9 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Calendar, FileText, Plus, BarChart3, Users, LogOut } from "lucide-react";
+import { Calendar, FileText, Plus, BarChart3, Users, LogOut, Trash, Edit } from "lucide-react";
 import { getApiUrl } from "@/lib/api-config";
+import { useToast } from "@/hooks/use-toast";
 
 type Stat = {
   label: string;
@@ -52,6 +53,8 @@ const ExaminerDashboard = () => {
     }
   };
 
+  const { toast } = useToast();
+
   const fetchDashboard = async () => {
     setLoading(true);
     try {
@@ -83,6 +86,27 @@ const ExaminerDashboard = () => {
     const timer = setInterval(fetchDashboard, 60000);
     return () => clearInterval(timer);
   }, []);
+
+  const handleDeleteTest = async (testId: string) => {
+    const ok = window.confirm('Are you sure you want to delete this test and all related data? This action cannot be undone.');
+    if (!ok) return;
+
+    try {
+      const res = await fetch(getApiUrl(`/api/examiner/tests/${testId}`), { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: 'Delete failed' }));
+        toast({ title: 'Delete Failed', description: err.message || 'Failed to delete test', variant: 'destructive' });
+        return;
+      }
+
+      toast({ title: 'Deleted', description: 'Test deleted successfully' });
+      // remove from current state
+      setTests(prev => prev.filter(t => t.id !== testId));
+    } catch (error: any) {
+      console.error('Delete test error:', error);
+      toast({ title: 'Delete Failed', description: 'Failed to delete test', variant: 'destructive' });
+    }
+  };
 
 
   return (
@@ -233,11 +257,19 @@ const ExaminerDashboard = () => {
                         {test.status}
                       </Badge>
                       {test.status === 'completed' && (
-                        <Button variant="outline" size="sm">
+                        <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); navigate(`/examiner/results/${test.id}`); }}>
                           <BarChart3 className="mr-2 h-4 w-4" />
                           View Results
                         </Button>
                       )}
+
+                      <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); navigate(`/examiner/create-test/${test.id}`); }}>
+                        <Edit className="h-4 w-4" />
+                      </Button>
+
+                      <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleDeleteTest(test.id); }}>
+                        <Trash className="h-4 w-4 text-destructive" />
+                      </Button>
                     </div>
                   </div>
                 ))
