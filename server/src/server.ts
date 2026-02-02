@@ -366,6 +366,17 @@ app.get('/api/examiner/dashboard', async (req: Request, res: Response) => {
 
     const activeStudents = studentCount;
 
+    // compute unreviewed proctoring logs per test
+    const unreviewedAgg = await ProctoringLog.aggregate([
+      { $match: { reviewed: false } },
+      { $lookup: { from: 'examattempts', localField: 'attemptId', foreignField: '_id', as: 'attempt' } },
+      { $unwind: '$attempt' },
+      { $group: { _id: '$attempt.testId', count: { $sum: 1 } } },
+    ]);
+
+    const unreviewedMap: Record<string, number> = {};
+    unreviewedAgg.forEach((r: any) => { unreviewedMap[(r._id as any).toString()] = r.count; });
+
     const dashboardData = {
       stats: [
         { label: 'Total Tests', value: totalTests.toString(), color: 'primary' },
@@ -379,7 +390,11 @@ app.get('/api/examiner/dashboard', async (req: Request, res: Response) => {
         date: t.startTime ? t.startTime.toISOString().split('T')[0] : '',
         students: t.allowedStudents?.length || 0,
         status: t.status,
+        startTime: t.startTime ? t.startTime.toISOString() : null,
+        endTime: t.endTime ? t.endTime.toISOString() : null,
+        unreviewedViolations: unreviewedMap[(t._id as any).toString()] || 0,
       })),
+      unreviewedTotal: unreviewedAgg.reduce((acc: number, cur: any) => acc + (cur.count || 0), 0),
     };
 
     res.status(200).json(dashboardData);
@@ -616,6 +631,199 @@ app.get('/api/examiner/students', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('Fetch students error:', error);
     res.status(500).json({ message: 'Failed to fetch students', error: error?.message });
+  }
+});
+
+// List live/ongoing tests for monitoring
+app.get('/api/examiner/live-tests', async (req: Request, res: Response) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available. Please try again later.', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    const now = new Date();
+
+    // Include tests that are explicitly active/running OR whose scheduled window includes now
+    const liveTests = await Test.find({
+      $or: [
+        { status: { $in: ['active', 'running'] } },
+        { startTime: { $lte: now }, endTime: { $gte: now } }
+      ]
+    }).sort({ startTime: -1 });
+
+    // Attach count of in-progress attempts for each test
+    const testsWithStats = await Promise.all(liveTests.map(async (t: any) => {
+      const inProgressCount = await ExamAttempt.countDocuments({ testId: t._id, status: 'in-progress' });
+      return {
+        id: (t._id as any).toString(),
+        name: t.name,
+        startTime: t.startTime,
+        endTime: t.endTime,
+        students: t.allowedStudents?.length || 0,
+        status: t.status,
+        activeAttempts: inProgressCount,
+      };
+    }));
+
+    res.status(200).json({ tests: testsWithStats });
+  } catch (error: any) {
+    console.error('Fetch live tests error:', error);
+    res.status(500).json({ message: 'Failed to fetch live tests', error: error?.message });
+  }
+});
+
+// Fetch recent proctoring events for a given test (used by the live monitor)
+app.get('/api/examiner/monitor/:testId/events', async (req: Request, res: Response) => {
+  const { testId } = req.params;
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available. Please try again later.', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    if (!mongoose.isValidObjectId(testId)) {
+      return res.status(400).json({ message: 'Invalid test id provided', error: 'INVALID_ID' });
+    }
+
+    // Find attempts for this test (to map attempt -> student)
+    const attempts = await ExamAttempt.find({ testId }).populate('studentId', 'fullName email');
+    const attemptMap: Record<string, any> = {};
+    attempts.forEach((a: any) => {
+      attemptMap[(a._id as any).toString()] = a;
+    });
+
+    // Get recent proctoring logs (limit 200)
+    const logs = await ProctoringLog.find({ attemptId: { $in: Object.keys(attemptMap) } }).sort({ timestamp: -1 }).limit(200);
+
+    const result = logs.map((log: any) => ({
+      id: (log._id as any).toString(),
+      timestamp: log.timestamp,
+      label: log.label,
+      severity: log.severity,
+      imageId: log.imageId ? (log.imageId as any).toString() : null,
+      attemptId: (log.attemptId as any).toString(),
+      student: attemptMap[(log.attemptId as any).toString()] ? {
+        id: (attemptMap[(log.attemptId as any).toString()].studentId as any)._id?.toString(),
+        name: (attemptMap[(log.attemptId as any).toString()].studentId as any).fullName,
+        email: (attemptMap[(log.attemptId as any).toString()].studentId as any).email,
+      } : null,
+    }));
+
+    res.status(200).json({ events: result });
+  } catch (error: any) {
+    console.error('Fetch monitor events error:', error);
+    res.status(500).json({ message: 'Failed to fetch monitor events', error: error?.message });
+  }
+});
+
+// Review a proctoring log (mark valid/invalid); adjusts attempt trust score if invalidated
+app.put('/api/examiner/proctoring/:logId/review', async (req: Request, res: Response) => {
+  const { logId } = req.params;
+  const { verdict, reviewerId, notes } = req.body as { verdict?: 'valid' | 'invalid'; reviewerId?: string; notes?: string };
+
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available. Please try again later.', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    if (!mongoose.isValidObjectId(logId)) {
+      return res.status(400).json({ message: 'Invalid log id', error: 'INVALID_ID' });
+    }
+
+    const log = await ProctoringLog.findById(logId);
+    if (!log) return res.status(404).json({ message: 'Proctoring log not found', error: 'NOT_FOUND' });
+
+    if (!verdict || !['valid', 'invalid'].includes(verdict)) {
+      return res.status(400).json({ message: 'Invalid verdict provided', error: 'INVALID_VERDICT' });
+    }
+
+    // If already reviewed with same verdict, return current state.
+    if (log.reviewed && log.verdict === verdict) {
+      return res.status(200).json({ message: 'Already reviewed', log });
+    }
+
+    // Map severity to penalty (must match proctor chunk logic)
+    const penalty = log.severity === 'high' ? 10 : log.severity === 'medium' ? 5 : 2;
+
+    // Capture previous verdict to decide whether to adjust attempt
+    const previousVerdict = log.verdict;
+
+    // Update log review fields
+    log.reviewed = true;
+    log.verdict = verdict;
+    log.reviewedBy = reviewerId && mongoose.isValidObjectId(reviewerId) ? new mongoose.Types.ObjectId(reviewerId) : undefined;
+    log.reviewedAt = new Date();
+    if (notes) log.reviewerNotes = notes;
+
+    // Persist changes
+    await log.save();
+
+    const attempt = await ExamAttempt.findById(log.attemptId);
+    if (!attempt) {
+      return res.status(500).json({ message: 'Associated attempt not found', error: 'INTERNAL_ERROR' });
+    }
+
+    // If marking invalid and it wasn't already invalid, revert previous penalty
+    if (verdict === 'invalid' && previousVerdict !== 'invalid') {
+      attempt.totalViolations = Math.max(0, (attempt.totalViolations || 0) - 1);
+      attempt.trustScore = Math.min(100, (attempt.trustScore || 100) + penalty);
+      await attempt.save();
+    }
+
+    res.status(200).json({ message: 'Review applied', log, attempt: { id: attempt._id, trustScore: attempt.trustScore, totalViolations: attempt.totalViolations } });
+  } catch (error: any) {
+    console.error('Review log error:', error);
+    res.status(500).json({ message: 'Failed to apply review', error: error?.message });
+  }
+});
+
+// Fetch live attempts (with latest frame) for a given test
+app.get('/api/examiner/monitor/:testId/attempts', async (req: Request, res: Response) => {
+  const { testId } = req.params;
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available. Please try again later.', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    if (!mongoose.isValidObjectId(testId)) {
+      return res.status(400).json({ message: 'Invalid test id provided', error: 'INVALID_ID' });
+    }
+
+    // Return active attempts for this test (in-progress), include latest frame and student info
+    const attempts = await ExamAttempt.find({ testId, status: 'in-progress' }).populate('studentId', 'fullName email');
+
+    const result = attempts.map((a: any) => ({
+      attemptId: (a._id as any).toString(),
+      student: a.studentId ? { id: (a.studentId as any)._id?.toString(), name: (a.studentId as any).fullName, email: (a.studentId as any).email } : null,
+      startedAt: a.startedAt,
+      latestFrame: a.latestFrame || null,
+      latestFrameAt: a.latestFrameAt || null,
+      trustScore: a.trustScore || 100,
+      totalViolations: a.totalViolations || 0,
+    }));
+
+    res.status(200).json({ attempts: result });
+  } catch (error: any) {
+    console.error('Fetch monitor attempts error:', error);
+    res.status(500).json({ message: 'Failed to fetch monitor attempts', error: error?.message });
+  }
+});
+
+// Serve proctoring image by GridFS id
+app.get('/api/examiner/proctoring/images/:imageId', async (req: Request, res: Response) => {
+  const { imageId } = req.params;
+  try {
+    if (!mongoose.isValidObjectId(imageId)) return res.status(400).json({ message: 'Invalid image id' });
+    const bucket = getCheatingImagesBucket();
+    const _id = new mongoose.Types.ObjectId(imageId);
+    const download = bucket.openDownloadStream(_id);
+    download.on('error', (err) => {
+      console.error('GridFS download error:', err);
+      res.status(404).json({ message: 'Image not found' });
+    });
+    download.pipe(res);
+  } catch (error: any) {
+    console.error('Fetch image error:', error);
+    res.status(500).json({ message: 'Failed to fetch image', error: error?.message });
   }
 });
 
@@ -1237,29 +1445,41 @@ app.post('/api/student/proctor-chunk', async (req: Request, res: Response) => {
     // Process video chunk with ML model
     const mlResult = await processVideoChunkWithML(videoBuffer);
 
-    // If violation detected, log it to database using new ProctoringLog + ExamAttempt + GridFS
+    const logTimestamp = timestamp ? new Date(timestamp) : new Date();
+
+    // Ensure an exam attempt exists for this student & test so we can attach live frames
+    let attempt = await ExamAttempt.findOne({ testId, studentId });
+    if (!attempt) {
+      // If the student hasn't explicitly started attempt yet, create one in-progress
+      attempt = new ExamAttempt({
+        testId,
+        studentId,
+        status: 'in-progress',
+        startedAt: timestamp ? new Date(timestamp) : new Date(),
+        totalScore: 0,
+        trustScore: 100,
+        totalViolations: 0,
+        questionsAttempted: 0,
+        answers: [],
+      });
+      await attempt.save();
+      console.log(`[PROCTOR] Created new exam attempt for student ${studentId}`);
+    }
+
+    // If we extracted a frame, attach it to the attempt for live monitoring (keeps latest snapshot)
+    try {
+      if (frameImage) {
+        // Use .set to avoid TypeScript property mismatch on Mongoose document type
+        attempt.set({ latestFrame: frameImage, latestFrameAt: logTimestamp });
+        await attempt.save();
+      }
+    } catch (frameError) {
+      console.error('[PROCTOR] Error saving latest frame on attempt:', frameError);
+    }
+
+    // If violation detected, also persist a ProctoringLog + GridFS copy of the frame
     if (mlResult.hasViolation && mlResult.violationType) {
       console.log(`[PROCTOR] Violation detected: ${mlResult.violationType} (${mlResult.severity})`);
-      
-      // Ensure an exam attempt exists for this student & test
-      let attempt = await ExamAttempt.findOne({ testId, studentId });
-      if (!attempt) {
-        attempt = new ExamAttempt({
-          testId,
-          studentId,
-          status: 'in-progress',
-          startedAt: timestamp ? new Date(timestamp) : new Date(),
-          totalScore: 0,
-          trustScore: 100,
-          totalViolations: 0,
-          questionsAttempted: 0,
-          answers: [],
-        });
-        await attempt.save();
-        console.log(`[PROCTOR] Created new exam attempt for student ${studentId}`);
-      }
-
-      const logTimestamp = timestamp ? new Date(timestamp) : new Date();
 
       // Save frame as GridFS file if available
       let imageId: mongoose.Types.ObjectId | undefined;
@@ -1324,8 +1544,8 @@ app.post('/api/student/proctor-chunk', async (req: Request, res: Response) => {
         severity,
       });
     } else {
-      // No violation, chunk processed and discarded
-      console.log(`[PROCTOR] No violation in chunk from student ${studentId}`);
+      // No violation, chunk processed and latest frame attached to attempt for live view
+      console.log(`[PROCTOR] No violation in chunk from student ${studentId} (latest frame saved)`);
       res.status(200).json({
         message: 'Chunk processed successfully',
         violationDetected: false,
@@ -1340,6 +1560,59 @@ app.post('/api/student/proctor-chunk', async (req: Request, res: Response) => {
       message: 'Chunk received (processing error logged)',
       violationDetected: false,
     });
+  }
+});
+
+// Start or resume an exam attempt for a student (marks as 'in-progress')
+app.post('/api/student/start-attempt', async (req: Request, res: Response) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available. Please try again later.', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    const { studentId, testId } = req.body;
+    if (!studentId || !testId) {
+      return res.status(400).json({ message: 'Missing required fields: studentId, testId', error: 'MISSING_FIELDS' });
+    }
+
+    // Verify test exists and is active
+    const test = await Test.findById(testId);
+    if (!test) return res.status(404).json({ message: 'Test not found', error: 'TEST_NOT_FOUND' });
+
+    const now = new Date();
+    if (now < test.startTime) return res.status(403).json({ message: 'Test not started yet', error: 'TEST_NOT_STARTED' });
+    if (now > test.endTime) return res.status(403).json({ message: 'Test has ended', error: 'TEST_ENDED' });
+
+    // Find or create attempt
+    let attempt = await ExamAttempt.findOne({ testId, studentId });
+    if (attempt && attempt.status === 'submitted') {
+      return res.status(409).json({ message: 'Test already submitted', error: 'TEST_ALREADY_SUBMITTED' });
+    }
+
+    if (!attempt) {
+      attempt = new ExamAttempt({
+        testId,
+        studentId,
+        status: 'in-progress',
+        startedAt: now,
+        totalScore: 0,
+        trustScore: 100,
+        totalViolations: 0,
+        questionsAttempted: 0,
+        answers: [],
+      });
+    } else {
+      // Ensure it's marked in-progress
+      attempt.status = 'in-progress';
+      if (!attempt.startedAt) attempt.startedAt = now;
+    }
+
+    await attempt.save();
+
+    res.status(200).json({ message: 'Attempt started', attemptId: (attempt._id as any).toString(), status: attempt.status });
+  } catch (error: any) {
+    console.error('Start attempt error:', error);
+    res.status(500).json({ message: 'Failed to start attempt', error: error?.message });
   }
 });
 

@@ -21,6 +21,9 @@ export interface IExamAttempt extends Document {
   trustScore: number;
   totalViolations: number;
   questionsAttempted: number;
+  // latest frame data uri for live monitoring (optional)
+  latestFrame?: string;
+  latestFrameAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -81,6 +84,13 @@ const ExamAttemptSchema = new Schema<IExamAttempt>(
     questionsAttempted: {
       type: Number,
       default: 0,
+    },
+    // Store last captured frame (base64 data URI) for live monitoring
+    latestFrame: {
+      type: String,
+    },
+    latestFrameAt: {
+      type: Date,
     },
   },
   {

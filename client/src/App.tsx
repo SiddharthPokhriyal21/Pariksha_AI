@@ -13,6 +13,7 @@ import StudentTestList from "./pages/StudentTestList";
 import StudentTest from "./pages/StudentTest";
 import ExaminerDashboard from "./pages/ExaminerDashboard";
 import CreateTest from "./pages/CreateTest";
+import ReviewViolations from "./pages/ReviewViolations";
 import TestResults from "./pages/TestResults";
 import StudentReport from "./pages/StudentReport";
 import NotFound from "./pages/NotFound";
@@ -37,6 +38,8 @@ const App = () => (
           <Route path="/examiner/dashboard" element={<ExaminerDashboard />} />
           <Route path="/examiner/create-test" element={<CreateTest />} />
           <Route path="/examiner/create-test/:testId" element={<CreateTest />} />
+          <Route path="/examiner/ReviewViolations" element={<ReviewViolations />} />
+          <Route path="/examiner/ReviewViolations/:testId" element={<ReviewViolations />} />
           <Route path="/examiner/results/:testId" element={<TestResults />} />
           <Route path="/examiner/report/:studentId/:testId" element={<StudentReport />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

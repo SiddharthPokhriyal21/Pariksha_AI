@@ -98,6 +98,19 @@ const StudentTest = () => {
         setTimeLeft((data.duration || 60) * 60);
         setCurrentQuestion(0);
         setAnswers({});
+
+        // Mark student's attempt as started (so examiner's monitor sees in-progress attempts)
+        (async () => {
+          try {
+            await fetch(getApiUrl('/api/student/start-attempt'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ studentId: studentId || undefined, testId }),
+            });
+          } catch (err) {
+            console.warn('Failed to start attempt (non-critical):', err);
+          }
+        })();
       } catch (error: any) {
         console.error('Failed to fetch test:', error);
         toast({

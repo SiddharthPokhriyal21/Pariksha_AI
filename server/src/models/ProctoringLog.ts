@@ -15,6 +15,11 @@ export interface IProctoringLog extends Document {
   label: ProctoringLabel;
   severity: ProctoringSeverity;
   imageId?: mongoose.Types.ObjectId; // GridFS file ID
+  reviewed?: boolean;
+  verdict?: 'valid' | 'invalid';
+  reviewedBy?: mongoose.Types.ObjectId;
+  reviewedAt?: Date;
+  reviewerNotes?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -43,6 +48,25 @@ const ProctoringLogSchema = new Schema<IProctoringLog>(
     imageId: {
       type: Schema.Types.ObjectId,
     },
+    // Review metadata (set by examiner)
+    reviewed: {
+      type: Boolean,
+      default: false,
+    },
+    verdict: {
+      type: String,
+      enum: ['valid', 'invalid'],
+    },
+    reviewedBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+    },
+    reviewedAt: {
+      type: Date,
+    },
+    reviewerNotes: {
+      type: String,
+    },
   },
   {
     timestamps: true,
@@ -52,6 +76,7 @@ const ProctoringLogSchema = new Schema<IProctoringLog>(
 // Fast sorting & filtering
 ProctoringLogSchema.index({ attemptId: 1 });
 ProctoringLogSchema.index({ timestamp: 1 });
+ProctoringLogSchema.index({ reviewed: 1 });
 
 const ProctoringLog = mongoose.model<IProctoringLog>('ProctoringLog', ProctoringLogSchema);
 

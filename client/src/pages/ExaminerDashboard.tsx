@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Calendar, FileText, Plus, BarChart3, Users, LogOut, Trash, Edit } from "lucide-react";
+import { Calendar, FileText, Plus, BarChart3, Users, LogOut, Trash, Edit, Eye } from "lucide-react";
 import { getApiUrl } from "@/lib/api-config";
 import { useToast } from "@/hooks/use-toast";
 
@@ -22,6 +22,9 @@ type TestItem = {
   date: string;
   students: number;
   status: string;
+  startTime?: string;
+  endTime?: string;
+  unreviewedViolations?: number;
 };
 
 const ExaminerDashboard = () => {
@@ -31,6 +34,7 @@ const ExaminerDashboard = () => {
   const [stats, setStats] = useState<Stat[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [unreviewedTotal, setUnreviewedTotal] = useState<number>(0);
 
   // Map backend color names to tailwind utility classes used in the UI
   const mapColorClass = (c?: string) => {
@@ -73,6 +77,7 @@ const ExaminerDashboard = () => {
 
       setStats(statsWithIcons);
       setTests((data.tests || []) as TestItem[]);
+      setUnreviewedTotal(data.unreviewedTotal || 0);
       setError(null);
     } catch (err: any) {
       console.error('Dashboard fetch error:', err);
@@ -195,7 +200,24 @@ const ExaminerDashboard = () => {
             </CardHeader>
           </Card>
 
-
+          <Card className="cursor-pointer hover:shadow-lg transition-shadow" onClick={() => navigate('/examiner/ReviewViolations')}>
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-secondary/10 rounded-lg">
+                  <Eye className="w-6 h-6 text-secondary" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <CardTitle>Review Violations</CardTitle>
+                    {unreviewedTotal > 0 && (
+                      <Badge variant="destructive">{unreviewedTotal} Unreviewed</Badge>
+                    )}
+                  </div>
+                  <CardDescription>Open test attempts and review proctoring violations</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+          </Card>
         </div>
 
         {/* Tests List */}
@@ -226,46 +248,62 @@ const ExaminerDashboard = () => {
               ) : tests.length === 0 ? (
                 <div className="p-4 text-muted-foreground">No recent tests found.</div>
               ) : (
-                tests.map((test) => (
-                  <div 
-                    key={test.id} 
-                    className="flex items-center justify-between p-4 border rounded-lg hover:bg-muted/50 cursor-pointer transition-colors"
-                    onClick={() => test.status === 'completed' && navigate(`/examiner/results/${test.id}`)}
-                  >
-                    <div className="flex-1">
-                      <h3 className="font-semibold">{test.name}</h3>
-                      <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
-                        <span className="flex items-center gap-1">
-                          <Calendar className="w-4 h-4" />
-                          {test.date}
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <Users className="w-4 h-4" />
-                          {test.students} students
-                        </span>
+                tests.map((test) => {
+                  // Compute display status from start/end times to reflect scheduled/completed correctly
+                  const now = new Date();
+                  const start = test.startTime ? new Date(test.startTime) : undefined;
+                  const end = test.endTime ? new Date(test.endTime) : undefined;
+                  let displayStatus = test.status || 'scheduled';
+                  if (start && now < start) displayStatus = 'scheduled';
+                  else if (end && now > end) displayStatus = 'completed';
+                  else displayStatus = 'active';
+
+                  return (
+                    <div 
+                      key={test.id} 
+                      className="flex items-center justify-between p-4 border rounded-lg hover:bg-muted/50 cursor-pointer transition-colors"
+                      onClick={() => displayStatus === 'completed' && navigate(`/examiner/results/${test.id}`)}
+                    >
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3">
+                          <h3 className="font-semibold">{test.name}</h3>
+                          {test.unreviewedViolations && test.unreviewedViolations > 0 && (
+                            <Badge variant="destructive">{test.unreviewedViolations} Unreviewed</Badge>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
+                          <span className="flex items-center gap-1">
+                            <Calendar className="w-4 h-4" />
+                            {test.date}
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <Users className="w-4 h-4" />
+                            {test.students} students
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <Badge variant={displayStatus === 'completed' ? 'default' : 'secondary'}>
+                          {displayStatus}
+                        </Badge>
+                        {displayStatus === 'completed' && (
+                          <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); navigate(`/examiner/results/${test.id}`); }}>
+                            <BarChart3 className="mr-2 h-4 w-4" />
+                            View Results
+                          </Button>
+                        )}
+
+                        <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); navigate(`/examiner/create-test/${test.id}`); }}>
+                          <Edit className="h-4 w-4" />
+                        </Button>
+
+                        <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleDeleteTest(test.id); }}>
+                          <Trash className="h-4 w-4 text-destructive" />
+                        </Button>
                       </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <Badge variant={test.status === 'completed' ? 'default' : 'secondary'}>
-                        {test.status}
-                      </Badge>
-                      {test.status === 'completed' && (
-                        <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); navigate(`/examiner/results/${test.id}`); }}>
-                          <BarChart3 className="mr-2 h-4 w-4" />
-                          View Results
-                        </Button>
-                      )}
-
-                      <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); navigate(`/examiner/create-test/${test.id}`); }}>
-                        <Edit className="h-4 w-4" />
-                      </Button>
-
-                      <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleDeleteTest(test.id); }}>
-                        <Trash className="h-4 w-4 text-destructive" />
-                      </Button>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </CardContent>

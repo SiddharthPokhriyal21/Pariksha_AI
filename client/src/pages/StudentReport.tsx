@@ -40,6 +40,8 @@ const StudentReport = () => {
     load();
   }, [studentId, testId]);
 
+  // Review actions are handled on the Review Violations page and were removed from this report view.
+
   const getSeverityColor = (severity: string) => {
     switch (severity) {
       case 'high': return 'destructive';
@@ -133,15 +135,32 @@ const StudentReport = () => {
                             {violation.severity}
                           </Badge>
                           <span>{violation.label}</span>
+                          {violation.reviewed && (
+                            <span className="ml-3 text-sm text-muted-foreground">(Reviewed: {violation.verdict})</span>
+                          )}
                         </div>
                       </AlertDescription>
                     </div>
                     
                     <div className="ml-4 bg-muted rounded-lg w-48 h-32 flex items-center justify-center flex-shrink-0">
-                      <Camera className="w-8 h-8 text-muted-foreground" />
-                      <p className="text-xs text-muted-foreground ml-2">Screenshot</p>
+                      {violation.imageId ? (
+                        <a href={getApiUrl(`/api/examiner/proctoring/images/${violation.imageId}`)} target="_blank" rel="noreferrer">
+                          <img src={getApiUrl(`/api/examiner/proctoring/images/${violation.imageId}`)} alt="evidence" className="w-full h-full object-cover rounded-md" />
+                        </a>
+                      ) : (
+                        <div className="flex flex-col items-center justify-center text-muted-foreground">
+                          <Camera className="w-6 h-6" />
+                          <p className="text-xs mt-1">No image</p>
+                        </div>
+                      )}
                     </div>
                   </div>
+
+                  {violation.reviewed && (
+                    <div className="mt-3 text-sm text-muted-foreground">
+                      Reviewed: {violation.verdict} {violation.reviewedAt ? `on ${new Date(violation.reviewedAt).toLocaleString()}` : ''} {violation.reviewerNotes ? ` — Notes: ${violation.reviewerNotes}` : ''}
+                    </div>
+                  )}
                 </Alert>
               ))}
             </CardContent>

@@ -29,6 +29,7 @@ const TestResults = () => {
   const [sortBy, setSortBy] = useState('name');
   const [selectedStudents, setSelectedStudents] = useState<string[]>([]);
   const [topNStudents, setTopNStudents] = useState('');
+  const [showViolationsOnly, setShowViolationsOnly] = useState(false);
 
   const [students, setStudents] = useState<StudentResult[]>([]);
   const [loading, setLoading] = useState(true);
@@ -181,6 +182,13 @@ const TestResults = () => {
               </div>
             </div>
 
+            <div className="flex items-center gap-3 mt-3">
+              <Button size="sm" variant={showViolationsOnly ? 'default' : 'outline'} onClick={() => setShowViolationsOnly(s => !s)}>
+                <AlertTriangle className="w-4 h-4 mr-2" />
+                {showViolationsOnly ? 'Showing Only Violations' : 'Show Only Students With Violations'}
+              </Button>
+            </div>
+
             <Button onClick={handleSendEmails} disabled={selectedStudents.length === 0}>
               <Mail className="mr-2 h-4 w-4" />
               Send Emails to Selected ({selectedStudents.length})
@@ -199,7 +207,7 @@ const TestResults = () => {
               ) : students.length === 0 ? (
                 <div className="p-4 text-muted-foreground">No student attempts found for this test.</div>
               ) : (
-                students.map((student) => (
+                (showViolationsOnly ? students.filter(s => s.violationsCount > 0) : students).map((student) => (
                   <div 
                     key={student.attemptId}
                     className={`p-4 border rounded-lg cursor-pointer transition-all ${
