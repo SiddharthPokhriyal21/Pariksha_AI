@@ -369,7 +369,7 @@ const CreateTest = () => {
                       <span className="font-semibold">Create Manually</span>
                     </div>
                     <p className="text-sm text-muted-foreground mt-1">
-                      Add questions one by one yourself
+                      Add questions one-by-one yourself
                     </p>
                   </Label>
                 </div>
@@ -390,7 +390,7 @@ const CreateTest = () => {
                 </div>
                 <Button onClick={handleGenerateWithAI} className="w-full">
                   <Sparkles className="mr-2 h-4 w-4" />
-                  Generate Questions with AI
+                  Generate questions with AI
                 </Button>
 
                 {/* Quick preview of generated questions when in AI mode */}
@@ -492,7 +492,7 @@ const CreateTest = () => {
                   </div>
 
                   <div>
-                    <Label>Allowed Students (comma separated emails)</Label>
+                    <Label>Allowed Students (comma-separated emails)</Label>
                     <Input placeholder="email1@example.com, email2@example.com" value={allowedStudentsInput} onChange={(e) => setAllowedStudentsInput(e.target.value)} />
                   </div>
                 </div>
