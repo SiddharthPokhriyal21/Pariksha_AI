@@ -8,6 +8,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import mongoose from 'mongoose';
+import jwt, { Secret } from 'jsonwebtoken';
 import User from './models/User';
 import Test from './models/Test';
 import Violation from './models/Violation';
@@ -24,6 +25,9 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || (process.env.NODE_ENV === 'produc
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const MONGODB_URI = process.env.MONGODB_URI;
+// JWT configuration
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '8h';
 
 console.log("LOOK HERE");
 console.log(MONGODB_URI);
@@ -98,6 +102,34 @@ app.use(bodyParser.json({ limit: '500mb' }));
 
 // --- Utility Functions ---
 const getNextId = (arr: any[]) => (arr.length ? Math.max(...arr.map(i => i.id)) + 1 : 1);
+
+// JWT helpers
+const generateJwtForUser = (user: any) => {
+  const payload = { id: (user._id as any).toString(), role: user.role, email: user.email, name: user.fullName };
+  return (jwt as any).sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+};
+
+const authenticateJWT = (req: Request, res: Response, next: Function) => {
+  const authHeader = (req.headers['authorization'] || '') as string;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ message: 'Missing or invalid Authorization header' });
+  }
+  const token = authHeader.split(' ')[1];
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET as Secret) as any;
+    // attach to request
+    (req as any).user = decoded;
+    next();
+  } catch (err: any) {
+    return res.status(401).json({ message: 'Invalid or expired token' });
+  }
+};
+
+const requireRole = (role: string) => (req: Request, res: Response, next: Function) => {
+  const user = (req as any).user;
+  if (!user || user.role !== role) return res.status(403).json({ message: 'Forbidden: insufficient role' });
+  next();
+};
 
 
 // Endpoint to trigger model loading (called from homepage)
@@ -199,12 +231,14 @@ app.post('/api/auth/:role/register', async (req: Request, res: Response) => {
     // Save to MongoDB
     await newUser.save();
 
+    // Generate a token so user can be logged in immediately after registration
+    const token = generateJwtForUser(newUser);
+
     // Return success response (don't send password or face descriptor)
     res.status(201).json({ 
       message: 'Registration successful', 
-      userId: (newUser._id as any).toString(), 
-      role: newUser.role,
-      email: newUser.email
+      token,
+      user: { userId: (newUser._id as any).toString(), role: newUser.role, email: newUser.email }
     });
   } catch (error: any) {
     console.error('Registration error:', error);
@@ -320,9 +354,11 @@ app.post('/api/auth/:role/login', async (req: Request, res: Response) => {
       });
     }
     
-    // Success - return user info (without password or face descriptor)
+    // Success - return user info (without password or face descriptor) and a signed JWT
+    const token = generateJwtForUser(user);
     res.status(200).json({ 
       message: 'Authentication Successful!', 
+      token,
       user: { 
         id: (user._id as any).toString(), 
         name: user.fullName, 
@@ -352,6 +388,12 @@ app.post('/api/auth/:role/login', async (req: Request, res: Response) => {
 // ===============================
 //         EXAMINER ROUTES
 // ===============================
+
+// Protect all /api/examiner endpoints: must present a valid JWT and be an examiner
+app.use('/api/examiner', authenticateJWT, requireRole('examiner'));
+
+// Protect all /api/student endpoints: must present a valid JWT and be a student
+app.use('/api/student', authenticateJWT, requireRole('student'));
 
 // Fetches data for ExaminerDashboard.tsx (now fully backed by MongoDB, no hardcoded tests)
 app.get('/api/examiner/dashboard', async (req: Request, res: Response) => {
@@ -812,6 +854,15 @@ app.get('/api/examiner/monitor/:testId/attempts', async (req: Request, res: Resp
 app.get('/api/examiner/proctoring/images/:imageId', async (req: Request, res: Response) => {
   const { imageId } = req.params;
   try {
+    // allow token via Authorization header or query param (?token=...)
+    let token: string | undefined;
+    const authHeader = (req.headers['authorization'] || '') as string;
+    if (authHeader && authHeader.startsWith('Bearer ')) token = authHeader.split(' ')[1];
+    if (!token && req.query && (req.query as any).token) token = (req.query as any).token;
+
+    if (!token) return res.status(401).json({ message: 'Unauthorized' });
+    try { jwt.verify(token, JWT_SECRET); } catch (err) { return res.status(401).json({ message: 'Invalid token' }); }
+
     if (!mongoose.isValidObjectId(imageId)) return res.status(400).json({ message: 'Invalid image id' });
     const bucket = getCheatingImagesBucket();
     const _id = new mongoose.Types.ObjectId(imageId);
@@ -1278,6 +1329,12 @@ app.get('/api/student/test/:testId', async (req: Request, res: Response) => {
     const { testId } = req.params;
     let { studentId, email } = req.query as { studentId?: string; email?: string };
 
+    // If no studentId provided, use authenticated user (JWT)
+    if (!studentId) {
+      const user = (req as any).user;
+      if (user && user.id) studentId = user.id;
+    }
+
     if (!studentId && !email) {
       return res.status(400).json({ 
         message: 'Student ID or email is required',
@@ -1420,7 +1477,13 @@ app.post('/api/student/proctor-chunk', async (req: Request, res: Response) => {
       });
     }
 
-    const { studentId, testId, videoChunk, timestamp } = req.body;
+    let { studentId, testId, videoChunk, timestamp } = req.body as any;
+
+    // If studentId not provided, pull from authenticated user (JWT)
+    if (!studentId) {
+      const user = (req as any).user;
+      if (user && user.id) studentId = user.id;
+    }
 
     // Validate required fields
     if (!studentId || !testId || !videoChunk) {
@@ -1570,7 +1633,13 @@ app.post('/api/student/start-attempt', async (req: Request, res: Response) => {
       return res.status(503).json({ message: 'Database connection not available. Please try again later.', error: 'DATABASE_UNAVAILABLE' });
     }
 
-    const { studentId, testId } = req.body;
+    let { studentId, testId } = req.body as any;
+    // If studentId not supplied, get it from JWT
+    if (!studentId) {
+      const user = (req as any).user;
+      if (user && user.id) studentId = user.id;
+    }
+
     if (!studentId || !testId) {
       return res.status(400).json({ message: 'Missing required fields: studentId, testId', error: 'MISSING_FIELDS' });
     }

@@ -60,11 +60,15 @@ const StudentRegister = () => {
 
       if (response.ok) {
         const data = await response.json();
+        // If registration returns a token, store it and navigate to student tests
+        if (data.token) localStorage.setItem('token', data.token);
+        if (data.user) localStorage.setItem('user', JSON.stringify(data.user));
+
         toast({
           title: "Registration Successful!",
-          description: data.message || "Your account has been created. Please login.",
+          description: data.message || "Your account has been created.",
         });
-        navigate('/student/login');
+        if (data.token) navigate('/student/tests'); else navigate('/student/login');
       } else {
         let errorMessage = "Failed to create account. Please try again.";
         try {

@@ -16,6 +16,7 @@ import CreateTest from "./pages/CreateTest";
 import ReviewViolations from "./pages/ReviewViolations";
 import TestResults from "./pages/TestResults";
 import StudentReport from "./pages/StudentReport";
+import RequireAuth from "./components/RequireAuth";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -32,16 +33,16 @@ const App = () => (
           <Route path="/examiner/register" element={<ExaminerRegister />} />
           <Route path="/student/login" element={<StudentLogin />} />
           <Route path="/examiner/login" element={<ExaminerLogin />} />
-          <Route path="/student/tests" element={<StudentTestList />} />
-          <Route path="/student/rules" element={<StudentRules />} />
-          <Route path="/student/test" element={<StudentTest />} />
-          <Route path="/examiner/dashboard" element={<ExaminerDashboard />} />
-          <Route path="/examiner/create-test" element={<CreateTest />} />
-          <Route path="/examiner/create-test/:testId" element={<CreateTest />} />
-          <Route path="/examiner/ReviewViolations" element={<ReviewViolations />} />
-          <Route path="/examiner/ReviewViolations/:testId" element={<ReviewViolations />} />
-          <Route path="/examiner/results/:testId" element={<TestResults />} />
-          <Route path="/examiner/report/:studentId/:testId" element={<StudentReport />} />
+          <Route path="/student/tests" element={<RequireAuth role="student"><StudentTestList /></RequireAuth>} />
+          <Route path="/student/rules" element={<RequireAuth role="student"><StudentRules /></RequireAuth>} />
+          <Route path="/student/test" element={<RequireAuth role="student"><StudentTest /></RequireAuth>} />
+          <Route path="/examiner/dashboard" element={<RequireAuth role="examiner"><ExaminerDashboard /></RequireAuth>} />
+          <Route path="/examiner/create-test" element={<RequireAuth role="examiner"><CreateTest /></RequireAuth>} />
+          <Route path="/examiner/create-test/:testId" element={<RequireAuth role="examiner"><CreateTest /></RequireAuth>} />
+          <Route path="/examiner/ReviewViolations" element={<RequireAuth role="examiner"><ReviewViolations /></RequireAuth>} />
+          <Route path="/examiner/ReviewViolations/:testId" element={<RequireAuth role="examiner"><ReviewViolations /></RequireAuth>} />
+          <Route path="/examiner/results/:testId" element={<RequireAuth role="examiner"><TestResults /></RequireAuth>} />
+          <Route path="/examiner/report/:studentId/:testId" element={<RequireAuth role="examiner"><StudentReport /></RequireAuth>} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Calendar, FileText, Plus, BarChart3, Users, LogOut, Trash, Edit, Eye } from "lucide-react";
-import { getApiUrl } from "@/lib/api-config";
+import { getApiUrl, authFetch } from "@/lib/api-config";
 import { useToast } from "@/hooks/use-toast";
 
 
@@ -64,7 +64,7 @@ const ExaminerDashboard = () => {
   const fetchDashboard = async () => {
     setLoading(true);
     try {
-      const res = await fetch(getApiUrl('/api/examiner/dashboard'));
+      const res = await authFetch(getApiUrl('/api/examiner/dashboard'));
       if (!res.ok) throw new Error('Failed to fetch dashboard data');
       const data = await res.json();
 
@@ -102,7 +102,7 @@ const ExaminerDashboard = () => {
     if (!ok) return;
 
     try {
-      const res = await fetch(getApiUrl(`/api/examiner/tests/${testId}`), { method: 'DELETE' });
+      const res = await authFetch(getApiUrl(`/api/examiner/tests/${testId}`), { method: 'DELETE' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ message: 'Delete failed' }));
         toast({ title: 'Delete Failed', description: err.message || 'Failed to delete test', variant: 'destructive' });
@@ -129,7 +129,7 @@ const ExaminerDashboard = () => {
               <h1 className="text-2xl font-bold">Examiner Dashboard</h1>
               <p className="text-muted-foreground">Manage tests and monitor students</p>
             </div>
-            <Button variant="outline" onClick={() => navigate('/')}>
+            <Button variant="outline" onClick={() => { localStorage.removeItem('token'); localStorage.removeItem('user'); navigate('/'); }}>
               <LogOut className="mr-2 h-4 w-4" />
               Logout
             </Button>

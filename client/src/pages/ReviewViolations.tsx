@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { getApiUrl } from "@/lib/api-config";
+import { getApiUrl, authFetch, getImageUrl } from "@/lib/api-config";
 import { useToast } from "@/hooks/use-toast";
 import { Calendar, Users, Eye } from "lucide-react";
 
@@ -17,7 +17,7 @@ const ReviewViolations = () => {
   const fetchLiveTests = async () => {
     setLoading(true);
     try {
-      const res = await fetch(getApiUrl('/api/examiner/live-tests'));
+      const res = await authFetch(getApiUrl('/api/examiner/live-tests'));
       if (!res.ok) throw new Error('Failed to fetch violations');
       const data = await res.json();
       setTests(data.tests || []);
@@ -113,7 +113,7 @@ function MonitorDetail({ testId, onBack }: { testId: string; onBack: () => void 
 
   const fetchEvents = async () => {
     try {
-      const res = await fetch(getApiUrl(`/api/examiner/monitor/${testId}/events`));
+      const res = await authFetch(getApiUrl(`/api/examiner/monitor/${testId}/events`));
       if (!res.ok) throw new Error('Failed to fetch events');
       const data = await res.json();
       setEvents(data.events || []);
@@ -129,7 +129,7 @@ function MonitorDetail({ testId, onBack }: { testId: string; onBack: () => void 
 
   const fetchAttempts = async () => {
     try {
-      const res = await fetch(getApiUrl(`/api/examiner/monitor/${testId}/attempts`));
+      const res = await authFetch(getApiUrl(`/api/examiner/monitor/${testId}/attempts`));
       if (!res.ok) throw new Error('Failed to fetch attempts');
       const data = await res.json();
       setAttemptsList(data.attempts || []);
@@ -143,7 +143,7 @@ function MonitorDetail({ testId, onBack }: { testId: string; onBack: () => void 
   const applyReview = async (logId: string, verdict: 'valid' | 'invalid') => {
     setReviewingLogs(prev => [...prev, logId]);
     try {
-      const res = await fetch(getApiUrl(`/api/examiner/proctoring/${logId}/review`), {
+      const res = await authFetch(getApiUrl(`/api/examiner/proctoring/${logId}/review`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ verdict }),
@@ -266,8 +266,8 @@ function MonitorDetail({ testId, onBack }: { testId: string; onBack: () => void 
                       </CardHeader>
                       <CardContent>
                         {e.imageId ? (
-                          <a href={getApiUrl(`/api/examiner/proctoring/images/${e.imageId}`)} target="_blank" rel="noreferrer">
-                            <img src={getApiUrl(`/api/examiner/proctoring/images/${e.imageId}`)} alt="evidence" className="w-48 h-32 object-cover rounded-md" />
+                          <a href={getImageUrl(e.imageId)} target="_blank" rel="noreferrer">
+                            <img src={getImageUrl(e.imageId)} alt="evidence" className="w-48 h-32 object-cover rounded-md" />
                           </a>
                         ) : (
                           <div className="text-sm text-muted-foreground">No image</div>

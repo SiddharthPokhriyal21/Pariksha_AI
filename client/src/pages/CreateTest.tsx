@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { ArrowLeft, Sparkles, Plus, Trash } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { getApiUrl } from "@/lib/api-config";
+import { getApiUrl, authFetch } from "@/lib/api-config";
 
 interface Question {
   id: number;
@@ -50,7 +50,12 @@ const CreateTest = () => {
     // Fetch test details for editing
     (async () => {
       try {
-        const resp = await fetch(getApiUrl(`/api/examiner/tests/${testId}`));
+        const resp = await authFetch(getApiUrl(`/api/examiner/tests/${testId}`));
+        if (resp.status === 401) {
+          toast({ title: 'Unauthorized', description: 'Please login as an examiner to edit tests', variant: 'destructive' });
+          navigate('/examiner/login');
+          return;
+        }
         if (!resp.ok) {
           let bodyText = '';
           try {
@@ -119,7 +124,7 @@ const CreateTest = () => {
   const fetchStudentsForSchedule = async () => {
     setStudentLoading(true);
     try {
-      const res = await fetch(getApiUrl('/api/examiner/students'));
+      const res = await authFetch(getApiUrl('/api/examiner/students'));
       if (!res.ok) throw new Error('Failed to fetch students');
       const data = await res.json();
       setStudents(data.students || []);
@@ -201,7 +206,7 @@ const CreateTest = () => {
     });
     
     try {
-      const response = await fetch(getApiUrl('/api/examiner/ai-generate'), {
+      const response = await authFetch(getApiUrl('/api/examiner/ai-generate'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ aiPrompt })
@@ -285,7 +290,7 @@ const CreateTest = () => {
       const url = isEditing && testId ? getApiUrl(`/api/examiner/tests/${testId}`) : getApiUrl('/api/examiner/tests');
       const method = isEditing && testId ? 'PUT' : 'POST';
 
-      const response = await fetch(url, {
+      const response = await authFetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)

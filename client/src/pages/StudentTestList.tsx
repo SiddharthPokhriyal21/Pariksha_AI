@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, Clock, FileText, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { getApiUrl } from "@/lib/api-config";
+import { getApiUrl, authFetch } from "@/lib/api-config";
 
 interface Test {
   id: string;
@@ -48,7 +48,7 @@ const StudentTestList = () => {
           queryParams.append('email', studentEmail);
         }
 
-        const response = await fetch(getApiUrl(`/api/student/tests?${queryParams.toString()}`));
+        const response = await authFetch(getApiUrl(`/api/student/tests?${queryParams.toString()}`));
         
         if (response.ok) {
           const data = await response.json();
