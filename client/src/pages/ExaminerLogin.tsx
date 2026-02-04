@@ -41,7 +41,14 @@ const ExaminerLogin = () => {
       
       if (response.ok) {
         const data = await response.json();
-        // Store user token/info, then navigate
+        // Store token & user info
+        if (data.token) {
+          localStorage.setItem('token', data.token);
+        }
+        if (data.user) {
+          localStorage.setItem('user', JSON.stringify(data.user));
+        }
+
         toast({
           title: "Authentication Successful!",
           description: data.message,

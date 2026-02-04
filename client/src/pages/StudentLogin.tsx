@@ -41,13 +41,18 @@ const StudentLogin = () => {
 
       if (response.ok) {
         const data = await response.json();
-        // Store student ID for later use
+        // Store token & user info
+        if (data.token) {
+          localStorage.setItem('token', data.token);
+        }
         if (data.user?.id) {
           localStorage.setItem('studentId', data.user.id);
         }
         if (data.user?.email) {
           localStorage.setItem('studentEmail', data.user.email);
         }
+        if (data.user) localStorage.setItem('user', JSON.stringify(data.user));
+
         toast({
           title: "Authentication Successful!",
           description: data.message || "Welcome back!",

@@ -57,11 +57,18 @@ const ExaminerRegister = () => {
 
       if (response.ok) {
         const data = await response.json();
+        // If registration returns a token, store it and navigate to dashboard
+        if (data.token) {
+          localStorage.setItem('token', data.token);
+        }
+        if (data.user) {
+          localStorage.setItem('user', JSON.stringify(data.user));
+        }
         toast({
           title: "Registration Successful!",
-          description: data.message || "Your examiner account has been created. Please login.",
+          description: data.message || "Your examiner account has been created.",
         });
-        navigate('/examiner/login');
+        if (data.token) navigate('/examiner/dashboard'); else navigate('/examiner/login');
       } else {
         const error = await response.json();
         toast({

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { getApiUrl } from "@/lib/api-config";
+import { getApiUrl, authFetch } from "@/lib/api-config";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -79,7 +79,7 @@ const TestResults = () => {
       if (!testId) return;
       setLoading(true);
       try {
-        const res = await fetch(getApiUrl(`/api/examiner/results/${testId}`));
+        const res = await authFetch(getApiUrl(`/api/examiner/results/${testId}`));
         if (!res.ok) throw new Error('Failed to fetch results');
         const data = await res.json();
         setStudents((data.students || []) as StudentResult[]);

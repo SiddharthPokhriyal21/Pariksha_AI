@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, AlertTriangle, CheckCircle, Camera, Clock } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { getApiUrl } from "@/lib/api-config";
+import { getApiUrl, authFetch, getImageUrl } from "@/lib/api-config";
 
 const StudentReport = () => {
   const navigate = useNavigate();
@@ -22,7 +22,7 @@ const StudentReport = () => {
       setLoading(true);
       try {
         if (!studentId || !testId) return;
-        const res = await fetch(getApiUrl(`/api/examiner/report/${studentId}/${testId}`));
+        const res = await authFetch(getApiUrl(`/api/examiner/report/${studentId}/${testId}`));
         if (!res.ok) throw new Error('Failed to fetch report');
         const data = await res.json();
         setStudent(data.student);
@@ -144,8 +144,8 @@ const StudentReport = () => {
                     
                     <div className="ml-4 bg-muted rounded-lg w-48 h-32 flex items-center justify-center flex-shrink-0">
                       {violation.imageId ? (
-                        <a href={getApiUrl(`/api/examiner/proctoring/images/${violation.imageId}`)} target="_blank" rel="noreferrer">
-                          <img src={getApiUrl(`/api/examiner/proctoring/images/${violation.imageId}`)} alt="evidence" className="w-full h-full object-cover rounded-md" />
+                        <a href={getImageUrl(violation.imageId)} target="_blank" rel="noreferrer">
+                          <img src={getImageUrl(violation.imageId)} alt="evidence" className="w-full h-full object-cover rounded-md" />
                         </a>
                       ) : (
                         <div className="flex flex-col items-center justify-center text-muted-foreground">

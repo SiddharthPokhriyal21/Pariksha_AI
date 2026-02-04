@@ -7,7 +7,7 @@ import { Clock, Eye, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
-import { getApiUrl } from "@/lib/api-config";
+import { getApiUrl, authFetch } from "@/lib/api-config";
 
 // Helper function to convert blob to base64
 const blobToBase64 = (blob: Blob): Promise<string> => {
@@ -81,7 +81,7 @@ const StudentTest = () => {
         if (studentId) queryParams.append('studentId', studentId);
         if (studentEmail) queryParams.append('email', studentEmail);
 
-        const response = await fetch(getApiUrl(`/api/student/test/${testId}?${queryParams.toString()}`));
+        const response = await authFetch(getApiUrl(`/api/student/test/${testId}?${queryParams.toString()}`));
 
         if (!response.ok) {
           const error = await response.json();
@@ -102,7 +102,7 @@ const StudentTest = () => {
         // Mark student's attempt as started (so examiner's monitor sees in-progress attempts)
         (async () => {
           try {
-            await fetch(getApiUrl('/api/student/start-attempt'), {
+            await authFetch(getApiUrl('/api/student/start-attempt'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ studentId: studentId || undefined, testId }),
@@ -205,7 +205,7 @@ const StudentTest = () => {
             const testId = localStorage.getItem('testId') || 'unknown';
 
             // Send chunk to server for ML processing
-            const response = await fetch(getApiUrl('/api/student/proctor-chunk'), {
+            const response = await authFetch(getApiUrl('/api/student/proctor-chunk'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -388,7 +388,7 @@ const StudentTest = () => {
       const testId = localStorage.getItem('testId') || test.id;
 
       // Submit test with recording
-      const response = await fetch(getApiUrl('/api/student/submit-test'), {
+      const response = await authFetch(getApiUrl('/api/student/submit-test'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

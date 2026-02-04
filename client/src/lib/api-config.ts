@@ -31,3 +31,27 @@ export const getApiUrl = (endpoint: string): string => {
   return `${API_BASE_URL}${cleanEndpoint}`;
 };
 
+export const getToken = (): string | null => {
+  return localStorage.getItem('token');
+};
+
+export const getAuthHeaders = (extraHeaders: Record<string, string> = {}) => {
+  const token = getToken();
+  const headers: Record<string, string> = { ...extraHeaders };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
+};
+
+export const authFetch = async (url: string, options: RequestInit = {}) => {
+  const headers = { ...(options.headers || {}), ...getAuthHeaders() } as Record<string, string>;
+  const opts: RequestInit = { ...options, headers };
+  return fetch(url, opts);
+};
+
+export const getImageUrl = (imageId?: string | null) => {
+  if (!imageId) return '';
+  const token = getToken();
+  const base = getApiUrl(`/api/examiner/proctoring/images/${imageId}`);
+  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+};
+
